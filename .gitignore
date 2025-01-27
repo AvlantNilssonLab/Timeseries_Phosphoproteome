@@ -6,4 +6,5 @@ data/
 data_raw/
 results/
 toy_model/LEMBAS-main/
+toy_model/LEMBAS-GPU/
 toy_model/LEMBAS/
