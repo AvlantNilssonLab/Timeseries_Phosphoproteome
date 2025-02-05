@@ -122,17 +122,19 @@ class spectralRadius(torch.autograd.Function):
 
 class bionetworkFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, weights, bias, A, networkList, parameters, activation, deltaActivation):
+    def forward(ctx, x, weights, bias, A, networkList, parameters, activation, deltaActivation, celltype, celltype_factor):
         #Load into memory
         ctx.weights = weights.detach().numpy()
         A.data = ctx.weights
         ctx.networkList = networkList
         ctx.A = A
         ctx.deltaActivation = deltaActivation
-
-        bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy()
+        
+        torch.manual_seed(celltype)
+        celltype_linear = celltype_factor * (2 * torch.rand((bias.shape), dtype=torch.double) - 1)  # Randomize celltype term with values between -1 and 1
+        bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy() + celltype_linear.detach().numpy()  # Add celltype term to bias
         xhat = numpy.zeros(bIn.shape, dtype = bIn.dtype)
-        #xhat = numpy.random.rand(bIn.shape[0], bIn.shape[1]).astype(bIn.dtype)
+        
         xhatBefore = xhat.copy()
         
         xhatFull = numpy.zeros((bIn.shape[0], bIn.shape[1], parameters['iterations']), dtype=bIn.dtype)
@@ -198,10 +200,10 @@ class bionetworkFunction(torch.autograd.Function):
     
  
 class model(torch.nn.Module):
-    def __init__(self, networkList, nodeNames, modeOfAction, inputAmplitude, projectionFactor, inName, outName, bionetParams, activationFunction='MML', valType=torch.double):
+    def __init__(self, networkList, nodeNames, modeOfAction, inputAmplitude, projectionFactor, inName, outName, bionetParams, activationFunction='MML', valType=torch.double, celltype = 1, celltype_factor = 0.1):
         super(model, self).__init__()
         self.inputLayer = projectInput(nodeNames, inName, inputAmplitude, valType)
-        self.network = bionet(networkList, len(nodeNames), modeOfAction, bionetParams, activationFunction, valType)
+        self.network = bionet(networkList, len(nodeNames), modeOfAction, bionetParams, activationFunction, valType, celltype, celltype_factor)
         self.projectionLayer = projectOutput(nodeNames, outName, projectionFactor, valType)
         
     def forward(self, X):
@@ -460,7 +462,7 @@ def getAllSpectralRadius(model, YhatFull):
     return sr
 
 class bionet(nn.Module):
-    def __init__(self, networkList, size, modeOfAction, parameters, activationFunction, dtype):
+    def __init__(self, networkList, size, modeOfAction, parameters, activationFunction, dtype, celltype, celltype_factor):
         super().__init__()
         self.param = parameters
 
@@ -469,6 +471,8 @@ class bionet(nn.Module):
         self.networkList = networkList
         self.modeOfAction = torch.tensor(modeOfAction)
         self.type = dtype
+        self.celltype = celltype
+        self.celltype_factor = celltype_factor
 
         # initialize weights and biases
         weights, bias = self.initializeWeights()
@@ -493,7 +497,7 @@ class bionet(nn.Module):
             self.oneStepDeltaActivationFactor = activationFunctions.sigmoidOneStepDeltaActivationFactor
 
     def forward(self, x):
-        return bionetworkFunction.apply(x, self.weights, self.bias, self.A, self.networkList, self.param, self.activation, self.delta)
+        return bionetworkFunction.apply(x, self.weights, self.bias, self.A, self.networkList, self.param, self.activation, self.delta, self.celltype, self.celltype_factor)
 
     def getWeight(self, nodeNames, source, target):
         self.A.data = self.weights.detach().numpy()
