@@ -59,15 +59,16 @@ def split_data(X_in: torch.Tensor,
 
         # Split the y_out to keep all time points for the respective conditions
         y_out = y_out.reset_index()
-        y_out[['Condition', 'Time']] = y_out['Condition_Time'].str.split('_', expand=True)
-        y_train = y_out[y_out['Condition'].isin(train_conditions)]
-        y_test = y_out[y_out['Condition'].isin(test_conditions)]
-        y_train = y_train.drop(columns=['Condition_Time'])
-        y_test = y_test.drop(columns=['Condition_Time'])
-        y_train['Condition_Time'] = y_train['Condition'] + '_' + y_train['Time']
-        y_train = y_train.set_index('Condition_Time').drop(columns=['Condition', 'Time'])
-        y_test['Condition_Time'] = y_test['Condition'] + '_' + y_test['Time']
-        y_test = y_test.set_index('Condition_Time').drop(columns=['Condition', 'Time'])
+        y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1]
+        y_out['Drug_CL'] = y_out['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
+        y_train = y_out[y_out['Drug_CL'].isin(train_conditions)]
+        y_test = y_out[y_out['Drug_CL'].isin(test_conditions)]
+        y_train = y_train.drop(columns=['Drug_CL_Time'])
+        y_test = y_test.drop(columns=['Drug_CL_Time'])
+        y_train['Drug_CL_Time'] = y_train['Drug_CL'] + '_' + y_train['Time']
+        y_train = y_train.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
+        y_test['Drug_CL_Time'] = y_test['Drug_CL'] + '_' + y_test['Time']
+        y_test = y_test.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
         
         X_val, y_val = None, None
     else:
@@ -272,7 +273,7 @@ def train_signaling_model(mod,
             Y_full, Y_fullFull = mod.signaling_network(X_full) # train signaling network weights
             Y_hat = mod.output_layer(Y_full)
             
-            time_points = [int(idx.split('_')[1]) for idx in y_train_index]
+            time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
             seen = set()
             unique_time_points = [x for x in time_points if not (x in seen or seen.add(x))]
             Y_subsampled = Y_fullFull[:, unique_time_points, :]

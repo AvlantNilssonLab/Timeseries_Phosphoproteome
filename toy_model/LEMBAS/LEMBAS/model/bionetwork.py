@@ -612,11 +612,9 @@ class SignalingModel(torch.nn.Module):
         self.projection_amplitude_out = projection_amplitude_out
 
         edge_list, node_labels, edge_MOA = self.parse_network(net, ban_list, weight_label, source_label, target_label)
-        print("just before")
                 
         # Save edge_list to a .txt file
         #np.savetxt("edge_list.txt", edge_list, fmt='%s', delimiter='\t')  # Adjust fmt and delimiter as needed
-
 
         if not bionet_params:
             bionet_params = self.DEFAULT_TRAINING_PARAMETERS.copy()
@@ -625,7 +623,6 @@ class SignalingModel(torch.nn.Module):
 
         # filter for nodes in the network, sorting by node_labels order
         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
-        print(self.X_in.columns.values)
         self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
 
         # define model layers
