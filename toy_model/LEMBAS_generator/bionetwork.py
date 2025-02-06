@@ -4,7 +4,7 @@ import scipy.sparse
 import numpy.random
 import pandas
 import numpy
-import activationFunctions
+import LEMBAS_generator.activationFunctions as activationFunctions
 from scipy.sparse.linalg import eigs
 #from scipy.linalg import norm
 from scipy.linalg import eig
