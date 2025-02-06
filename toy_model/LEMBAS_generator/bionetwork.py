@@ -132,7 +132,8 @@ class bionetworkFunction(torch.autograd.Function):
         
         torch.manual_seed(celltype)
         celltype_linear = celltype_factor * (2 * torch.rand((bias.shape), dtype=torch.double) - 1)  # Randomize celltype term with values between -1 and 1
-        bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy() + celltype_linear.detach().numpy()  # Add celltype term to bias
+        b_celltype = celltype_linear.detach().numpy()
+        bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy() + b_celltype  # Add celltype term to bias
         xhat = numpy.zeros(bIn.shape, dtype = bIn.dtype)
         
         xhatBefore = xhat.copy()
@@ -161,7 +162,7 @@ class bionetworkFunction(torch.autograd.Function):
         ctx.xRaw = A.dot(xhat) + bIn  #When converged this is the same as taking inv(activation(xhat))
         ctx.x = xhat
         ctx.parameters = parameters
-        return output, outputFull
+        return output, outputFull, b_celltype
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -200,7 +201,7 @@ class bionetworkFunction(torch.autograd.Function):
     
  
 class model(torch.nn.Module):
-    def __init__(self, networkList, nodeNames, modeOfAction, inputAmplitude, projectionFactor, inName, outName, bionetParams, activationFunction='MML', valType=torch.double, celltype = 1, celltype_factor = 0.1):
+    def __init__(self, networkList, nodeNames, modeOfAction, inputAmplitude, projectionFactor, inName, outName, bionetParams, activationFunction='MML', valType=torch.double, celltype = 1, celltype_factor = 0.01):
         super(model, self).__init__()
         self.inputLayer = projectInput(nodeNames, inName, inputAmplitude, valType)
         self.network = bionet(networkList, len(nodeNames), modeOfAction, bionetParams, activationFunction, valType, celltype, celltype_factor)
@@ -210,9 +211,9 @@ class model(torch.nn.Module):
         fullX = self.inputLayer(X)
         # The code is calling a method `network` on the object `self` with the argument `fullX` and
         # assigning the result to the variable `fullY`.
-        fullY, fullYFull = self.network(fullX)
+        fullY, fullYFull, b_celltype = self.network(fullX)
         Yhat = self.projectionLayer(fullY)
-        return Yhat, fullY, fullYFull
+        return Yhat, fullY, fullYFull, b_celltype
 
 
 def spectralLoss(signalingModel, YhatFull, weights, expFactor = 20, lb=0.5):
