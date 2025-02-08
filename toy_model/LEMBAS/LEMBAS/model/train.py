@@ -1,7 +1,7 @@
 """
 Train the signaling model.
 """
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Literal
 import time
 import logging
 
@@ -25,8 +25,9 @@ HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL
 def split_data(X_in: torch.Tensor, 
                y_out: torch.Tensor, 
                train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None}, 
-              seed: int = 888):
-    """Splits the data into train, test, and validation.
+               seed: int = 888,
+               split_by: Literal['time', 'condition'] = 'time'):
+    """Splits the data into train, test, and validation. It keeps specific time points for training and others for testing.
 
     Parameters
     ----------
@@ -44,33 +45,62 @@ def split_data(X_in: torch.Tensor,
         raise ValueError('Train-test-validation split must sum to 1')
     
     if not train_split_frac['validation'] or train_split_frac['validation'] == 0:
-        """X_train, X_test, y_train, y_test = train_test_split(X_in, 
-                                                        y_out, 
-                                                        train_size=train_split_frac['train'],
-                                                        random_state=seed)"""
-        # Naive split implementation
-        X_train, X_test = train_test_split(  # Split X conditions
-            X_in,
-            train_size=train_split_frac['train'],
-            random_state=seed
-        )
-        train_conditions = X_train.index.astype(str)
-        test_conditions = X_test.index.astype(str)
-
-        # Split the y_out to keep all time points for the respective conditions
-        y_out = y_out.reset_index()
-        y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1]
-        y_out['Drug_CL'] = y_out['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
-        y_train = y_out[y_out['Drug_CL'].isin(train_conditions)]
-        y_test = y_out[y_out['Drug_CL'].isin(test_conditions)]
-        y_train = y_train.drop(columns=['Drug_CL_Time'])
-        y_test = y_test.drop(columns=['Drug_CL_Time'])
-        y_train['Drug_CL_Time'] = y_train['Drug_CL'] + '_' + y_train['Time']
-        y_train = y_train.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
-        y_test['Drug_CL_Time'] = y_test['Drug_CL'] + '_' + y_test['Time']
-        y_test = y_test.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
         
-        X_val, y_val = None, None
+        if split_by == 'time':
+            # Time split
+            y_out = y_out.reset_index()
+            y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1].astype(int)
+            unique_time_points = y_out['Time'].unique()
+            
+            # Determine number of time points for splits and randomly sample them
+            n_train_time_points = int(round(len(unique_time_points) * train_split_frac['train']))
+            train_time_points = np.random.choice(unique_time_points, n_train_time_points, replace=False)
+            test_time_points = np.setdiff1d(unique_time_points, train_time_points)
+            
+            print(f'Time points selected for training set: {train_time_points}')
+            
+            # Split the data based on the selected time points
+            y_train = y_out[y_out['Time'].isin(train_time_points)]
+            y_test = y_out[y_out['Time'].isin(test_time_points)]
+        
+            y_train = y_train.drop(columns=['Time'])
+            y_test = y_test.drop(columns=['Time'])
+            y_train = y_train.set_index('Drug_CL_Time')
+            y_test = y_test.set_index('Drug_CL_Time')
+            
+            # Split X_in based on the conditions in y_train and y_test
+            train_conditions = y_train.index.str.rsplit('_', n=1).str[0].unique()
+            test_conditions = y_test.index.str.rsplit('_', n=1).str[0].unique()
+            X_train = X_in.loc[train_conditions]
+            X_test = X_in.loc[test_conditions]
+            
+            return X_train, X_test, y_train, y_test, train_time_points.tolist(), test_time_points.tolist()
+        
+        else:
+            # Condition split
+            X_train, X_test = train_test_split(  # Split X conditions
+                X_in,
+                train_size=train_split_frac['train'],
+                random_state=seed
+            )
+            train_conditions = X_train.index.astype(str)
+            test_conditions = X_test.index.astype(str)
+
+            # Split the y_out to keep all time points for the respective conditions
+            y_out = y_out.reset_index()
+            y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1]
+            y_out['Drug_CL'] = y_out['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
+            y_train = y_out[y_out['Drug_CL'].isin(train_conditions)]
+            y_test = y_out[y_out['Drug_CL'].isin(test_conditions)]
+            y_train = y_train.drop(columns=['Drug_CL_Time'])
+            y_test = y_test.drop(columns=['Drug_CL_Time'])
+            y_train['Drug_CL_Time'] = y_train['Drug_CL'] + '_' + y_train['Time']
+            y_train = y_train.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
+            y_test['Drug_CL_Time'] = y_test['Drug_CL'] + '_' + y_test['Time']
+            y_test = y_test.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
+            
+            return X_train, X_test, y_train, y_test
+        
     else:
         X_train, _X, y_train, _y = train_test_split(X_in, 
                                                         y_out, 
@@ -80,8 +110,9 @@ def split_data(X_in: torch.Tensor,
                                                     _y, 
                                                     train_size=train_split_frac['test']/(train_split_frac['test'] + train_split_frac['validation']),
                                                     random_state=seed)
-    #print(y_train.head())
+        
     return X_train, X_test, X_val, y_train, y_test, y_val
+
 
 class ModelData(Dataset):
     def __init__(self, X_in, y_out, X_index, y_index):
@@ -108,16 +139,6 @@ class ModelData(Dataset):
         Y_indices = self.condition_to_indices[condition]
         Y_items = self.y_out[Y_indices]
         return X_item, Y_items
-    """def __init__(self, X_in, y_out):
-        self.X_in = X_in
-        self.y_out = y_out
-    def __len__(self) -> int:
-        "Returns the total number of samples."
-        return self.X_in.shape[0]
-    
-    def __getitem__(self, idx: int):
-        "Returns one sample of data, data and label (X, y)."
-        return self.X_in[idx, :], self.y_out[idx, :]"""
 
 def train_signaling_model(mod,  
                           optimizer: torch.optim, 
@@ -126,8 +147,9 @@ def train_signaling_model(mod,
                           hyper_params: Dict[str, Union[int, float]] = None,
                           train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
                           train_seed: int = None,
-                         verbose: bool = True, 
-                         break_nan: bool = True):
+                          verbose: bool = True, 
+                          break_nan: bool = True,
+                          split_by: Literal['time', 'condition'] = 'time'):
     """Trains the signaling model
 
     Parameters
@@ -166,8 +188,9 @@ def train_signaling_model(mod,
     verbose : bool, optional
         whether to print various progress stats across training epochs
     break_nan : bool, optional
-        whether to break the training loop if params containt nan
-
+        whether to break the training loop if params contain nan
+    split_by : Literal['time', 'condition'], optional
+        criterion to split the data, by default 'time'
 
     Returns
     -------
@@ -213,7 +236,11 @@ def train_signaling_model(mod,
     
     if not train_seed:
         train_seed = mod.seed
-    X_train, X_test, X_val, y_train, y_test, y_val = split_data(X_in, y_out, train_split_frac, train_seed)
+    
+    if split_by == 'time':
+        X_train, X_test, y_train, y_test, train_time_points, test_time_points = split_data(X_in, y_out, train_split_frac, train_seed, split_by)
+    else:
+        X_train, X_test, y_train, y_test = split_data(X_in, y_out, train_split_frac, train_seed, split_by)
     
     # Store the indexes for batch matching
     X_train_index = X_train.index.tolist()
@@ -328,4 +355,7 @@ def train_signaling_model(mod,
         mins, secs = divmod(time.time() - start_time, 60)
         print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-    return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_val, y_train, y_test, y_val
+    if split_by == 'time':
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, train_time_points, test_time_points
+    else:
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test
