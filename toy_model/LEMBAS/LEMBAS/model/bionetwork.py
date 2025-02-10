@@ -87,7 +87,7 @@ class ProjectInput(nn.Module):
 
 class CellLineNetwork(nn.Module):
     """Fully connected network to handle cell line information."""
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dtype: torch.dtype = torch.float32, device: str = 'cpu'):
+    def __init__(self, input_dim: int, hidden_layers: Dict[int, int], output_dim: int, dtype: torch.dtype = torch.float32, device: str = 'cpu'):
         """
         Initialization method.
 
@@ -95,6 +95,8 @@ class CellLineNetwork(nn.Module):
         ----------
         input_dim : int
             Number of input neurons (number of cell lines).
+        hidden_layers : Dict[int, int]
+            Dictionary specifying the number of hidden layers and their sizes. Keys are layer indices (starting from 1) and values are the number of neurons.
         output_dim : int
             Number of output neurons (same as the shape of the bias in X_bias).
         dtype : torch.dtype, optional
@@ -105,9 +107,20 @@ class CellLineNetwork(nn.Module):
         super().__init__()
         self.device = device
         self.dtype = dtype
-        self.fc1 = nn.Linear(input_dim, hidden_dim, bias=True).to(device, dtype)
-        self.fc2 = nn.Linear(hidden_dim, output_dim, bias=True).to(device, dtype)
-        self.activation = nn.ReLU()
+
+        layers = []
+        prev_dim = input_dim
+
+        # Add hidden layers if any
+        if hidden_layers:
+            for i in range(1, len(hidden_layers) + 1):
+                layers.append(nn.Linear(prev_dim, hidden_layers[i]).to(device, dtype))
+                layers.append(nn.ReLU())
+                prev_dim = hidden_layers[i]
+
+        # Add output layer
+        layers.append(nn.Linear(prev_dim, output_dim).to(device, dtype))
+        self.network = nn.Sequential(*layers)
 
     def forward(self, X_cell: torch.Tensor):
         """
@@ -123,8 +136,7 @@ class CellLineNetwork(nn.Module):
         X_bias : torch.Tensor
             The computed bias term. Shape is (samples x output_dim).
         """
-        hidden = self.activation(self.fc1(X_cell))
-        X_bias = self.fc2(hidden)
+        X_bias = self.network(X_cell)
         return X_bias
     
 
@@ -168,6 +180,8 @@ class BioNet(nn.Module):
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
         seed : int
             random seed for torch and numpy operations, by default 888
+        use_cell_line_network : bool, optional
+            whether to use the cell line network, by default True
         """
         super().__init__()
         self.training_params = bionet_params
@@ -309,8 +323,7 @@ class BioNet(nn.Module):
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
 
-        X_bias = X_full.T + self.bias # this is the bias with the projection_amplitude included
-        
+        X_bias = X_full.T + self.bias # this is the bias with the projection_amplitude included  
         if self.cell_line_network is not None:
             cell_line_bias = self.cell_line_network(X_cell)
             X_bias = X_bias + cell_line_bias.T  # Add the cell line bias term
@@ -617,7 +630,7 @@ class SignalingModel(torch.nn.Module):
                  source_label: str = 'source', target_label: str = 'target', 
                  bionet_params: Dict[str, float] = None , 
                  activation_function: str='MML', dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888,
-                 use_cell_line_network: bool = True):
+                 use_cell_line_network: bool = True, hidden_layers: Dict[int, int] = None):
         """Parse the signaling network and build the model layers.
 
         Parameters
@@ -657,6 +670,10 @@ class SignalingModel(torch.nn.Module):
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
         seed : int
             random seed for torch and numpy operations, by default 888
+        use_cell_line_network : bool, optional
+            whether to use the cell line network, by default True
+        hidden_layers : Dict[int, int]
+            Dictionary specifying the number of hidden layers and their sizes. Keys are layer indices (starting from 1) and values are the number of neurons.
         """
         super().__init__()
         self.dtype = dtype
@@ -692,7 +709,7 @@ class SignalingModel(torch.nn.Module):
                                         bionet_params = bionet_params, 
                                         activation_function = activation_function, 
                                         dtype = self.dtype, device = self.device, seed = self.seed,
-                                        cell_line_network = CellLineNetwork(input_dim=X_cell.shape[1], hidden_dim=128, output_dim=len(node_labels), dtype=self.dtype, device=self.device) if use_cell_line_network else None)
+                                        cell_line_network = CellLineNetwork(input_dim=X_cell.shape[1], hidden_layers=hidden_layers, output_dim=len(node_labels), dtype=self.dtype, device=self.device) if use_cell_line_network else None)
         self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
                                           output_labels = self.y_out.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 
