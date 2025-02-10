@@ -115,9 +115,10 @@ def split_data(X_in: torch.Tensor,
 
 
 class ModelData(Dataset):
-    def __init__(self, X_in, y_out, X_index, y_index):
+    def __init__(self, X_in, y_out, X_cell, X_index, y_index):
         self.X_in = X_in
         self.y_out = y_out
+        self.X_cell = X_cell
         self.X_index = X_index
         self.y_index = y_index
         
@@ -135,10 +136,11 @@ class ModelData(Dataset):
         "Returns one sample of data, data and label (X, y)."
         condition = self.X_index[idx]
         X_item = self.X_in[idx]
+        X_cell_item = self.X_cell[idx]
         # Get all corresponding Y items for the condition
         Y_indices = self.condition_to_indices[condition]
         Y_items = self.y_out[Y_indices]
-        return X_item, Y_items
+        return X_item, X_cell_item, Y_items
 
 def train_signaling_model(mod,  
                           optimizer: torch.optim, 
@@ -231,7 +233,8 @@ def train_signaling_model(mod,
     #mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean TF (across samples) loss
     X_in = mod.X_in
     y_out = mod.y_out
-
+    X_cell = mod.X_cell
+    
     # set up data objects
     
     if not train_seed:
@@ -252,9 +255,10 @@ def train_signaling_model(mod,
     X_test = mod.df_to_tensor(X_test)
     y_train = mod.df_to_tensor(y_train)
     y_test = mod.df_to_tensor(y_test)
+    X_cell = mod.df_to_tensor(X_cell)
     mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean TF (across samples) loss
     
-    train_data = ModelData(X_train.to('cpu'), y_train.to('cpu'), X_train_index, y_train_index)
+    train_data = ModelData(X_train.to('cpu'), y_train.to('cpu'), X_cell.to('cpu'), X_train_index, y_train_index)
     
     if mod.device == 'cuda':
         pin_memory = True
@@ -286,18 +290,18 @@ def train_signaling_model(mod,
         # iterate through batches
         if mod.seed:
             utils.set_seeds(mod.seed + e)
-        for batch, (X_in_, y_out_) in enumerate(train_dataloader):
+        for batch, (X_in_, X_cell_, y_out_) in enumerate(train_dataloader):
             mod.train()
             optimizer.zero_grad()
 
-            X_in_, y_out_ = X_in_.to(mod.device), y_out_.to(mod.device)
+            X_in_, X_cell_, y_out_ = X_in_.to(mod.device), X_cell_.to(mod.device), y_out_.to(mod.device)
             
             # forward pass
             X_full = mod.input_layer(X_in_) # transform to full network with ligand input concentrations
             utils.set_seeds(mod.seed + mod._gradient_seed_counter)
             network_noise = torch.randn(X_full.shape, device = X_full.device)
             X_full = X_full + (hyper_params['noise_level'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
-            Y_full, Y_fullFull = mod.signaling_network(X_full) # train signaling network weights
+            Y_full, Y_fullFull = mod.signaling_network(X_full, X_cell_) # train signaling network weights
             Y_hat = mod.output_layer(Y_full)
             
             time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
