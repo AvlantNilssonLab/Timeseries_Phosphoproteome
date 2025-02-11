@@ -263,6 +263,7 @@ def train_signaling_model(mod,
     
     # Store the indexes for batch matching
     X_train_index = X_train.index.tolist()
+    X_test_index = X_test.index.tolist()
     y_train_index = y_train.index.tolist()
     X_in = mod.df_to_tensor(X_in)
     y_out = mod.df_to_tensor(y_out)
@@ -273,12 +274,16 @@ def train_signaling_model(mod,
     
     # Split X_cell if condition-based testing
     if split_by == 'condition':
-        X_cell = X_cell.loc[X_train_index]
-
-    X_cell = mod.df_to_tensor(X_cell)
+        X_cell_train = X_cell.loc[X_train_index]
+        X_cell_test = X_cell.loc[X_test_index]
+        X_cell_train = mod.df_to_tensor(X_cell_train)
+        X_cell_test = mod.df_to_tensor(X_cell_test)
+    else:
+        X_cell_train = mod.df_to_tensor(X_cell)
+    
     mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean TF (across samples) loss
     
-    train_data = ModelData(X_train.to('cpu'), y_train.to('cpu'), X_cell.to('cpu'), X_train_index, y_train_index)
+    train_data = ModelData(X_train.to('cpu'), y_train.to('cpu'), X_cell_train.to('cpu'), X_train_index, y_train_index)
     
     if mod.device == 'cuda':
         pin_memory = True
@@ -382,4 +387,4 @@ def train_signaling_model(mod,
     if split_by == 'time':
         return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, train_time_points, test_time_points
     else:
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, X_cell_train, X_cell_test
