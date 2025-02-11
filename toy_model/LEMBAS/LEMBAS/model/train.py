@@ -96,15 +96,23 @@ def split_data(X_in: torch.Tensor,
 
             # Split the y_out to keep all time points for the respective conditions
             y_out = y_out.reset_index()
-            y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1]
+            y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1].astype(int)
             y_out['Drug_CL'] = y_out['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
             y_train = y_out[y_out['Drug_CL'].isin(train_conditions)]
             y_test = y_out[y_out['Drug_CL'].isin(test_conditions)]
             y_train = y_train.drop(columns=['Drug_CL_Time'])
             y_test = y_test.drop(columns=['Drug_CL_Time'])
-            y_train['Drug_CL_Time'] = y_train['Drug_CL'] + '_' + y_train['Time']
+            
+            y_train = y_train.sort_values(by=['Time', 'Drug_CL'])
+            y_test = y_test.sort_values(by=['Time', 'Drug_CL'])
+            
+            # Map y index to X
+            X_train = X_in.loc[y_train['Drug_CL'].unique()]
+            X_test = X_in.loc[y_test['Drug_CL'].unique()]
+
+            y_train['Drug_CL_Time'] = y_train['Drug_CL'] + '_' + y_train['Time'].astype(str)
             y_train = y_train.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
-            y_test['Drug_CL_Time'] = y_test['Drug_CL'] + '_' + y_test['Time']
+            y_test['Drug_CL_Time'] = y_test['Drug_CL'] + '_' + y_test['Time'].astype(str)
             y_test = y_test.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
             
             return X_train, X_test, y_train, y_test
@@ -256,13 +264,17 @@ def train_signaling_model(mod,
     # Store the indexes for batch matching
     X_train_index = X_train.index.tolist()
     y_train_index = y_train.index.tolist()
-    
     X_in = mod.df_to_tensor(X_in)
     y_out = mod.df_to_tensor(y_out)
     X_train = mod.df_to_tensor(X_train)
     X_test = mod.df_to_tensor(X_test)
     y_train = mod.df_to_tensor(y_train)
     y_test = mod.df_to_tensor(y_test)
+    
+    # Split X_cell if condition-based testing
+    if split_by == 'condition':
+        X_cell = X_cell.loc[X_train_index]
+
     X_cell = mod.df_to_tensor(X_cell)
     mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean TF (across samples) loss
     
@@ -303,7 +315,7 @@ def train_signaling_model(mod,
             optimizer.zero_grad()
 
             X_in_, X_cell_, y_out_ = X_in_.to(mod.device), X_cell_.to(mod.device), y_out_.to(mod.device)
-            
+
             # forward pass
             X_full = mod.input_layer(X_in_) # transform to full network with ligand input concentrations
             utils.set_seeds(mod.seed + mod._gradient_seed_counter)
