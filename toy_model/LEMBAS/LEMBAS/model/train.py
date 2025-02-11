@@ -27,7 +27,8 @@ def split_data(X_in: torch.Tensor,
                train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None}, 
                seed: int = 888,
                split_by: Literal['time', 'condition'] = 'time'):
-    """Splits the data into train, test, and validation. It keeps specific time points for training and others for testing.
+    """Splits the data into train, test, and validation. It keeps specific time points for training and others for testing if split_by == 'time'. 
+    If split_by == 'condition' it keeps all time points of specific conditions in the training while all other conditions for testing.
 
     Parameters
     ----------
@@ -52,9 +53,16 @@ def split_data(X_in: torch.Tensor,
             y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1].astype(int)
             unique_time_points = y_out['Time'].unique()
             
+            # Ensure the first and last time points are always in the training set
+            first_time_point = unique_time_points.min()
+            last_time_point = unique_time_points.max()
+            remaining_time_points = np.setdiff1d(unique_time_points, [first_time_point, last_time_point])
+            
             # Determine number of time points for splits and randomly sample them
-            n_train_time_points = int(round(len(unique_time_points) * train_split_frac['train']))
-            train_time_points = np.random.choice(unique_time_points, n_train_time_points, replace=False)
+            n_train_time_points = int(round(len(unique_time_points) * train_split_frac['train'])) - 2
+            np.random.seed(seed)
+            train_time_points = np.random.choice(remaining_time_points, n_train_time_points, replace=False)
+            train_time_points = np.concatenate(([first_time_point], train_time_points, [last_time_point]))
             test_time_points = np.setdiff1d(unique_time_points, train_time_points)
             
             print(f'Time points selected for training set: {train_time_points}')
