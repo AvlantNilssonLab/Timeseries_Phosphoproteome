@@ -162,6 +162,42 @@ class ModelData(Dataset):
         
         return X_item, X_cell_item, Y_items, mask_items
 
+
+def soft_index(Y: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    """
+    Parametes
+    ----------
+    Y : torch.Tensor
+        the hidden state outputs of your RNN
+    indices : torch.Tensor
+        tensor of shape (K,) with continuous indices in [0, L-1]
+    
+    Returns
+    ----------
+    Y_selected : torch.Tensor
+        computed by linearly interpolating along the time dimension.
+    """
+    batch, L, feat = Y.shape
+    Y_cpu = Y.to('cpu')
+    # For each continuous index, compute floor and ceil indices and weights.
+    floor_idx = torch.floor(indices).long()  # shape (K,)
+    ceil_idx = torch.clamp(floor_idx + 1, max=L-1)  # shape (K,)
+    weight = (indices - floor_idx.float()).view(1, -1, 1)  # shape (1, K, 1)
+    
+    # Expand floor and ceil indices to have shape (batch, K, 1) for indexing.
+    floor_idx_full = floor_idx.view(1, -1, 1).expand(batch, -1, feat)
+    ceil_idx_full = ceil_idx.view(1, -1, 1).expand(batch, -1, feat)
+
+    # Gather the corresponding hidden state outputs.
+    # Y has shape (batch, L, features); we need to index along dimension 1.
+    Y_floor = torch.gather(Y_cpu, 1, floor_idx_full)  # (batch, K, feat)
+    Y_ceil = torch.gather(Y_cpu, 1, ceil_idx_full)      # (batch, K, feat)
+    # Perform linear interpolation:
+    Y_selected = (1 - weight) * Y_floor + weight * Y_ceil
+    time_idx = torch.round((floor_idx + ceil_idx)/2)
+    return Y_selected.to(Y.device), time_idx
+
+
 def train_signaling_model(mod,
                           net: pd.DataFrame,
                           optimizer: torch.optim, 
@@ -346,13 +382,16 @@ def train_signaling_model(mod,
             network_noise = torch.randn(X_full.shape, device = X_full.device)
             X_full = X_full + (hyper_params['noise_level'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
             Y_full, Y_fullFull = mod.signaling_network(X_full, X_cell_) # train signaling network weights
-            Y_hat = mod.output_layer(Y_full)
+            time_map = mod.time_layer()
+            print(time_map)
+            #Y_hat = mod.output_layer(Y_full)
             
             # Subsample Y_subsampled 2nd dimension (time points) to calculate loss
-            time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
-            seen = set()
-            unique_time_points = [x for x in time_points if not (x in seen or seen.add(x))]
-            Y_subsampled = Y_fullFull[:, unique_time_points, :]
+            #time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
+            #seen = set()
+            #unique_time_points = [x for x in time_points if not (x in seen or seen.add(x))]
+            Y_subsampled, time_idx = soft_index(Y_fullFull, time_map)
+            print(time_idx)
             
             # Subsample Y_subsampled 3rd dimension (gene nodes) to calculate loss
             mask = torch.tensor([i not in missing_indexes for i in range(len(node_labels))])
@@ -403,6 +442,7 @@ def train_signaling_model(mod,
         
         if verbose and e % 250 == 0:
             utils.print_stats(stats, iter = e)
+            print(time_idx)
         
         if np.logical_and(e % reset_epoch == 0, e>0):
             optimizer.state = reset_state.copy()
@@ -413,6 +453,6 @@ def train_signaling_model(mod,
         print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
     if split_by == 'time':
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, train_time_points, test_time_points, missing_indexes
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, train_time_points, test_time_points, missing_indexes, time_map
     else:
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_train_index, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_indexes
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_train_index, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_indexes, time_map

@@ -13,6 +13,7 @@ from scipy.sparse.linalg import eigs
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .model_utilities import np_to_torch, format_network
 from .activation_functions import activation_function_map
@@ -620,6 +621,55 @@ class ProjectOutput(nn.Module):
     #     """
     #     self.output_node_order = self.output_node_order.to(device)
 
+
+class CumsumMapping(nn.Module):
+    def __init__(self, bionet_params: Dict[str, float], K: int = 7):
+        """
+        Parameter
+        ----------
+        bionet_params : Dict[str, float]
+            training parameters for the model, by default None
+            Key values include:
+                - 'max_steps': maximum number of time steps of the RNN, by default 300
+                - 'tolerance': threshold at which to break RNN; based on magnitude of change of updated edge weight values, by default 1e-5
+                - 'leak': parameter to tune extent of leaking, analogous to leaky ReLU, by default 0.01
+                - 'spectral_target': _description_, by default np.exp(np.log(params['tolerance'])/params['target_steps'])
+                - 'exp_factor': _description_, by default 20
+        K : Int
+            Number of training time points
+        """
+        super().__init__()
+        self.L = bionet_params['max_steps']
+        self.K = K
+        # Initialize K raw parameters; these will be converted into positive increments.
+        self.delta_raw = nn.Parameter(torch.randn(K))
+        #self.x_lower = nn.Parameter(torch.tensor(0.0))
+        #self.x_diff = nn.Parameter(torch.tensor(0.0))
+    
+    def forward(self):
+        """
+        Returns
+        ----------
+        mapping : torch.Tensor
+        Tensor of shape (K,) with continuous indices in [0, L-1] that assign each training time point to a hidden state.
+        """
+        # Compute lower bound
+        #lower_bound = (self.L - 1) * torch.sigmoid(self.x_lower)
+        # Calculate the remaining range is (L-1 - lower_bound) with sigmoid to get fraction
+        #diff = (self.L - 1 - lower_bound) * torch.sigmoid(self.x_diff)
+        #upper_bound = lower_bound + diff  # so always upper_bound >= lower_bound
+        
+        deltas = F.softplus(self.delta_raw)  # Force positive values
+        anchors = torch.cumsum(deltas, dim=0)  # Enforce monotonicity
+        
+        # Normalize so that the last anchor is L-1
+        normalized = anchors / anchors[-1]
+        #mapping = lower_bound + normalized * (upper_bound - lower_bound)
+        mapping = normalized * (self.L - 1)
+        
+        return mapping
+    
+    
 class SignalingModel(torch.nn.Module):
     """Constructs the signaling network based RNN."""
     DEFAULT_TRAINING_PARAMETERS = {'target_steps': 100, 'max_steps': 300, 'exp_factor': 20, 'leak': 0.01, 'tolerance': 1e-5}
@@ -630,7 +680,7 @@ class SignalingModel(torch.nn.Module):
                  source_label: str = 'source', target_label: str = 'target', 
                  bionet_params: Dict[str, float] = None , 
                  activation_function: str='MML', dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888,
-                 use_cell_line_network: bool = True, hidden_layers: Dict[int, int] = None):
+                 use_cell_line_network: bool = True, hidden_layers: Dict[int, int] = None, n_timepoints: int = 7):
         """Parse the signaling network and build the model layers.
 
         Parameters
@@ -674,6 +724,8 @@ class SignalingModel(torch.nn.Module):
             whether to use the cell line network, by default True
         hidden_layers : Dict[int, int]
             Dictionary specifying the number of hidden layers and their sizes. Keys are layer indices (starting from 1) and values are the number of neurons.
+        n_timepoints : int
+            Number of time points in the training dataset
         """
         super().__init__()
         self.dtype = dtype
@@ -714,7 +766,8 @@ class SignalingModel(torch.nn.Module):
                                           output_labels = self.y_out.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 
                                           dtype = self.dtype, device = device)
-
+        self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
+        
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
                  weight_label: str = 'mode_of_action', source_label: str = 'source', target_label: str = 'target'):
         """Parse adjacency network.
