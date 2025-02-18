@@ -122,7 +122,7 @@ class spectralRadius(torch.autograd.Function):
 
 class bionetworkFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, weights, bias, A, networkList, parameters, activation, deltaActivation, celltype, celltype_factor, b_cellline_old):
+    def forward(ctx, x, weights, bias, A, networkList, parameters, activation, deltaActivation, celltype, celltype_percent, b_celltype_old, b_celltype):
         #Load into memory
         ctx.weights = weights.detach().numpy()
         A.data = ctx.weights
@@ -131,13 +131,24 @@ class bionetworkFunction(torch.autograd.Function):
         ctx.deltaActivation = deltaActivation
         
         torch.manual_seed(celltype)
-        celltype_linear = celltype_factor * (2 * torch.rand((bias.shape), dtype=torch.double) - 1)  # Randomize celltype term with values between -1 and 0
-        # Initialize a celltype from previous generation term if none
-        if b_cellline_old is None:
-            b_cellline_old = torch.zeros(bias.shape, dtype=torch.double).detach().numpy()
+        celltype_linear = torch.randn((bias.shape), dtype=torch.double) - 1  # Randomize celltype term with values from a standard normal distribution
         
-        b_cellline = celltype_linear.detach().numpy()
-        bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy() + b_cellline_old + b_cellline  # Add celltype and celltype from previous generation terms to bias
+        # Initialize a celltype from previous generation term if none
+        if b_celltype_old is None:
+            b_celltype_old = torch.zeros(bias.shape, dtype=torch.double).detach().numpy()
+        
+        if b_celltype is None:
+            b_celltype = celltype_linear.detach().numpy()
+
+            '''# Ensure that most of the nodes stay as they are except from specified percentage when biases are created
+            num_elements = bias.numel()
+            num_non_zero = int(num_elements * celltype_percent)
+            mask = torch.zeros(num_elements, dtype=torch.bool)
+            mask[:num_non_zero] = 1
+            mask = mask[torch.randperm(num_elements)].reshape(bias.shape)
+            celltype_linear = celltype_linear * mask'''
+
+        bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy() + b_celltype_old + b_celltype  # Add celltype and celltype from previous generation terms to bias
         xhat = numpy.zeros(bIn.shape, dtype = bIn.dtype)
         
         xhatBefore = xhat.copy()
@@ -166,7 +177,7 @@ class bionetworkFunction(torch.autograd.Function):
         ctx.xRaw = A.dot(xhat) + bIn  #When converged this is the same as taking inv(activation(xhat))
         ctx.x = xhat
         ctx.parameters = parameters
-        return output, outputFull, b_cellline
+        return output, outputFull, b_celltype
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -205,19 +216,19 @@ class bionetworkFunction(torch.autograd.Function):
     
  
 class model(torch.nn.Module):
-    def __init__(self, networkList, nodeNames, modeOfAction, inputAmplitude, projectionFactor, inName, outName, bionetParams, activationFunction='MML', valType=torch.double, celltype = 1, celltype_factor = 0.1, b_celltype_old = None):
+    def __init__(self, networkList, nodeNames, modeOfAction, inputAmplitude, projectionFactor, inName, outName, bionetParams, activationFunction='MML', valType=torch.double, celltype = 1, celltype_percent = 0.1, b_celltype_old = None, b_celltype = None):
         super(model, self).__init__()
         self.inputLayer = projectInput(nodeNames, inName, inputAmplitude, valType)
-        self.network = bionet(networkList, len(nodeNames), modeOfAction, bionetParams, activationFunction, valType, celltype, celltype_factor, b_celltype_old)
+        self.network = bionet(networkList, len(nodeNames), modeOfAction, bionetParams, activationFunction, valType, celltype, celltype_percent, b_celltype_old, b_celltype)
         self.projectionLayer = projectOutput(nodeNames, outName, projectionFactor, valType)
         
     def forward(self, X):
         fullX = self.inputLayer(X)
         # The code is calling a method `network` on the object `self` with the argument `fullX` and
         # assigning the result to the variable `fullY`.
-        fullY, fullYFull, b_cellline = self.network(fullX)
+        fullY, fullYFull, b_celltype = self.network(fullX)
         Yhat = self.projectionLayer(fullY)
-        return Yhat, fullY, fullYFull, b_cellline
+        return Yhat, fullY, fullYFull, b_celltype
 
 
 def spectralLoss(signalingModel, YhatFull, weights, expFactor = 20, lb=0.5):
@@ -467,7 +478,7 @@ def getAllSpectralRadius(model, YhatFull):
     return sr
 
 class bionet(nn.Module):
-    def __init__(self, networkList, size, modeOfAction, parameters, activationFunction, dtype, celltype, celltype_factor, b_celltype_old):
+    def __init__(self, networkList, size, modeOfAction, parameters, activationFunction, dtype, celltype, celltype_percent, b_celltype_old = None, b_celltype = None):
         super().__init__()
         self.param = parameters
 
@@ -477,8 +488,9 @@ class bionet(nn.Module):
         self.modeOfAction = torch.tensor(modeOfAction)
         self.type = dtype
         self.celltype = celltype
-        self.celltype_factor = celltype_factor
+        self.celltype_percent = celltype_percent
         self.b_celltype_old = b_celltype_old
+        self.b_celltype = b_celltype
         # initialize weights and biases
         weights, bias = self.initializeWeights()
 
@@ -502,7 +514,7 @@ class bionet(nn.Module):
             self.oneStepDeltaActivationFactor = activationFunctions.sigmoidOneStepDeltaActivationFactor
 
     def forward(self, x):
-        return bionetworkFunction.apply(x, self.weights, self.bias, self.A, self.networkList, self.param, self.activation, self.delta, self.celltype, self.celltype_factor, self.b_celltype_old)
+        return bionetworkFunction.apply(x, self.weights, self.bias, self.A, self.networkList, self.param, self.activation, self.delta, self.celltype, self.celltype_percent, self.b_celltype_old, self.b_celltype)
 
     def getWeight(self, nodeNames, source, target):
         self.A.data = self.weights.detach().numpy()
