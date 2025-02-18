@@ -385,6 +385,6 @@ def train_signaling_model(mod,
         print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
     if split_by == 'time':
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, train_time_points, test_time_points
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, train_time_points, test_time_points
     else:
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, X_cell_train, X_cell_test
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, X_cell_train, X_cell_test
