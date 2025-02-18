@@ -415,4 +415,4 @@ def train_signaling_model(mod,
     if split_by == 'time':
         return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, train_time_points, test_time_points, missing_indexes
     else:
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_indexes
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_train_index, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_indexes
