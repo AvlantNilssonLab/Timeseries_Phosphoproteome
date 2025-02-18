@@ -6,6 +6,7 @@ import time
 import logging
 
 import numpy as np
+import pandas as pd
 from sklearn.model_selection import train_test_split
 import torch
 from torch.utils.data import Dataset
@@ -131,10 +132,11 @@ def split_data(X_in: torch.Tensor,
 
 
 class ModelData(Dataset):
-    def __init__(self, X_in, y_out, X_cell, X_index, y_index):
+    def __init__(self, X_in, y_out, X_cell, mask, X_index, y_index):
         self.X_in = X_in
         self.y_out = y_out
         self.X_cell = X_cell
+        self.mask = mask
         self.X_index = X_index
         self.y_index = y_index
         
@@ -156,9 +158,12 @@ class ModelData(Dataset):
         # Get all corresponding Y items for the condition
         Y_indices = self.condition_to_indices[condition]
         Y_items = self.y_out[Y_indices]
-        return X_item, X_cell_item, Y_items
+        mask_items = self.mask[Y_indices]
+        
+        return X_item, X_cell_item, Y_items, mask_items
 
-def train_signaling_model(mod,  
+def train_signaling_model(mod,
+                          net: pd.DataFrame,
                           optimizer: torch.optim, 
                           loss_fn: torch.nn.modules.loss,
                           reset_epoch : int = 200,
@@ -174,6 +179,12 @@ def train_signaling_model(mod,
     ----------
     mod : SignalingModel
         initialized signaling model. Suggested to also run `mod.signaling_network.prescale_weights` prior to training
+    net: pd.DataFrame
+            signaling network adjacency list with the following columns:
+                - `weight_label`: whether the interaction is stimulating (1) or inhibiting (-1) or unknown (0). Exclude non-interacting (0)
+                nodes. 
+                - `source_label`: source node column name
+                - `target_label`: target node column name
     optimizer : torch.optim.adam.Adam
         optimizer to use during training
     loss_fn : torch.nn.modules.loss.MSELoss
@@ -251,6 +262,11 @@ def train_signaling_model(mod,
     y_out = mod.y_out
     X_cell = mod.X_cell
     
+    # identify genes to remove from prediction (all PKN nodes) to calculate loss
+    node_labels = sorted(pd.concat([net['source'], net['target']]).unique())
+    missing_labels = [label for label in node_labels if label not in list(y_out.columns)]  # Identify missing genes
+    missing_indexes = [node_labels.index(label) for label in missing_labels]   
+    
     # set up data objects
     
     if not train_seed:
@@ -283,7 +299,10 @@ def train_signaling_model(mod,
     
     mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean TF (across samples) loss
     
-    train_data = ModelData(X_train.to('cpu'), y_train.to('cpu'), X_cell_train.to('cpu'), X_train_index, y_train_index)
+    # Create NaN mask for y_train
+    mask = ~torch.isnan(y_train)
+    
+    train_data = ModelData(X_train.to('cpu'), y_train.to('cpu'), X_cell_train.to('cpu'), mask.to('cpu'), X_train_index, y_train_index)
     
     if mod.device == 'cuda':
         pin_memory = True
@@ -315,11 +334,11 @@ def train_signaling_model(mod,
         # iterate through batches
         if mod.seed:
             utils.set_seeds(mod.seed + e)
-        for batch, (X_in_, X_cell_, y_out_) in enumerate(train_dataloader):
+        for batch, (X_in_, X_cell_, y_out_, mask_) in enumerate(train_dataloader):
             mod.train()
             optimizer.zero_grad()
 
-            X_in_, X_cell_, y_out_ = X_in_.to(mod.device), X_cell_.to(mod.device), y_out_.to(mod.device)
+            X_in_, X_cell_, y_out_, mask_ = X_in_.to(mod.device), X_cell_.to(mod.device), y_out_.to(mod.device), mask_.to(mod.device)
 
             # forward pass
             X_full = mod.input_layer(X_in_) # transform to full network with ligand input concentrations
@@ -329,10 +348,19 @@ def train_signaling_model(mod,
             Y_full, Y_fullFull = mod.signaling_network(X_full, X_cell_) # train signaling network weights
             Y_hat = mod.output_layer(Y_full)
             
+            # Subsample Y_subsampled 2nd dimension (time points) to calculate loss
             time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
             seen = set()
             unique_time_points = [x for x in time_points if not (x in seen or seen.add(x))]
             Y_subsampled = Y_fullFull[:, unique_time_points, :]
+            
+            # Subsample Y_subsampled 3rd dimension (gene nodes) to calculate loss
+            mask = torch.tensor([i not in missing_indexes for i in range(len(node_labels))])
+            Y_subsampled = Y_subsampled[:, :, mask]
+            
+            # Mask NaN with 0 to skip loss calculation
+            y_out_.masked_fill_(~mask_, 0.0)
+            Y_subsampled.masked_fill_(~mask_, 0.0)
             
             # get prediction loss
             fit_loss = loss_fn(y_out_, Y_subsampled)
@@ -385,6 +413,6 @@ def train_signaling_model(mod,
         print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
     if split_by == 'time':
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, train_time_points, test_time_points
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, train_time_points, test_time_points, missing_indexes
     else:
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, X_cell_train, X_cell_test
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_indexes
