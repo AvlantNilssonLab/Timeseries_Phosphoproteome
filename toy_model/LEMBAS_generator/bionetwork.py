@@ -139,7 +139,15 @@ class bionetworkFunction(torch.autograd.Function):
         
         if b_celltype is None:
             b_celltype = celltype_linear.detach().numpy()
-            
+
+            '''# Ensure that most of the nodes stay as they are except from specified percentage when biases are created
+            num_elements = bias.numel()
+            num_non_zero = int(num_elements * celltype_percent)
+            mask = torch.zeros(num_elements, dtype=torch.bool)
+            mask[:num_non_zero] = 1
+            mask = mask[torch.randperm(num_elements)].reshape(bias.shape)
+            celltype_linear = celltype_linear * mask'''
+
         bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy() + b_celltype_old + b_celltype  # Add celltype and celltype from previous generation terms to bias
         xhat = numpy.zeros(bIn.shape, dtype = bIn.dtype)
         
