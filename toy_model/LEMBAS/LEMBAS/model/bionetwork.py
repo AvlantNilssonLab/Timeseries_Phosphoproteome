@@ -661,7 +661,7 @@ class CumsumMapping(nn.Module):
         
         deltas = F.softplus(self.delta_raw)  # Force positive values
         anchors = torch.cumsum(deltas, dim=0)  # Enforce monotonicity
-        
+
         # Normalize so that the last anchor is L-1
         normalized = anchors / anchors[-1]
         #mapping = lower_bound + normalized * (upper_bound - lower_bound)
@@ -669,6 +669,11 @@ class CumsumMapping(nn.Module):
         
         return mapping
     
+    def print_gradients(self):
+        if self.delta_raw.grad is not None:
+            print("Gradient of delta_raw:", self.delta_raw.grad)
+        else:
+            print("Gradient of delta_raw is None")
     
 class SignalingModel(torch.nn.Module):
     """Constructs the signaling network based RNN."""
