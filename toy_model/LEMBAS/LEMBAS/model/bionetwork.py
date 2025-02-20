@@ -333,6 +333,7 @@ class BioNet(nn.Module):
         
         # Initialize array to store all predictions
         X_newFull = torch.zeros((X_bias.shape[0], X_bias.shape[1], self.training_params['max_steps']), dtype=X_bias.dtype, device=X_bias.device)
+        cnt = 0
         for t in range(self.training_params['max_steps']): # like an RNN, updating from previous time step
             X_old = X_new
             X_new = torch.mm(self.weights, X_new) # scale matrix by edge weights
@@ -343,6 +344,11 @@ class BioNet(nn.Module):
                 diff = torch.max(torch.abs(X_new - X_old))    
                 if diff.lt(self.training_params['tolerance']):
                     break
+            cnt += 1
+        
+        # Pad with steady state values if time-loop breaks early
+        for j in range(cnt, self.training_params['max_steps']):
+            X_newFull[:, :, j] = X_new
         
         Y_full = X_new.T
         Y_fullFull = X_newFull.permute(1, 2, 0)
@@ -622,7 +628,7 @@ class ProjectOutput(nn.Module):
     #     self.output_node_order = self.output_node_order.to(device)
 
 
-class CumsumMapping(nn.Module):
+'''class CumsumMapping(nn.Module):
     def __init__(self, bionet_params: Dict[str, float], K: int = 7):
         """
         Parameter
@@ -673,7 +679,7 @@ class CumsumMapping(nn.Module):
         if self.delta_raw.grad is not None:
             print("Gradient of delta_raw:", self.delta_raw.grad)
         else:
-            print("Gradient of delta_raw is None")
+            print("Gradient of delta_raw is None")'''
     
 class SignalingModel(torch.nn.Module):
     """Constructs the signaling network based RNN."""
@@ -771,7 +777,7 @@ class SignalingModel(torch.nn.Module):
                                           output_labels = self.y_out.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 
                                           dtype = self.dtype, device = device)
-        self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
+        #self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
         
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
                  weight_label: str = 'mode_of_action', source_label: str = 'source', target_label: str = 'target'):

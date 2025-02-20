@@ -288,8 +288,8 @@ def train_signaling_model(mod,
     stats = utils.initialize_progress(hyper_params['max_iter'])
 
     mod = mod.copy() # do not overwrite input
-    #optimizer = optimizer(mod.parameters(), lr=1, weight_decay=0)
-    lr_factor = 10000
+    optimizer = optimizer(mod.parameters(), lr=1, weight_decay=0)
+    '''lr_factor = 10000
     base_lr = hyper_params['learning_rate']
     time_layer_lr = base_lr * lr_factor  # Higher learning rate for the time-mapping layer
 
@@ -299,7 +299,7 @@ def train_signaling_model(mod,
         {'params': mod.signaling_network.parameters(), 'lr': base_lr},
         {'params': mod.output_layer.parameters(), 'lr': base_lr},
         {'params': mod.time_layer.parameters(), 'lr': time_layer_lr}
-    ])
+    ])'''
     reset_state = optimizer.state.copy()
 
     #X_in = mod.df_to_tensor(mod.X_in)
@@ -373,12 +373,12 @@ def train_signaling_model(mod,
         # set learning rate
         cur_lr = utils.get_lr(e, hyper_params['max_iter'], max_height = hyper_params['learning_rate'],
                               start_height=hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
-        #optimizer.param_groups[0]['lr'] = cur_lr
-        for param_group in optimizer.param_groups:
+        optimizer.param_groups[0]['lr'] = cur_lr
+        '''for param_group in optimizer.param_groups:
             if param_group['lr'] == time_layer_lr:
                 param_group['lr'] = cur_lr * lr_factor  # Adjust time_layer learning rate
             else:
-                param_group['lr'] = cur_lr
+                param_group['lr'] = cur_lr'''
             
         cur_loss = []
         cur_eig = []
@@ -398,15 +398,17 @@ def train_signaling_model(mod,
             network_noise = torch.randn(X_full.shape, device = X_full.device)
             X_full = X_full + (hyper_params['noise_level'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
             Y_full, Y_fullFull = mod.signaling_network(X_full, X_cell_) # train signaling network weights
-            time_map = mod.time_layer()
+            #time_map = mod.time_layer()
 
             #Y_hat = mod.output_layer(Y_full)
             
             # Subsample Y_subsampled 2nd dimension (time points) to calculate loss
-            #time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
-            #seen = set()
-            #unique_time_points = [x for x in time_points if not (x in seen or seen.add(x))]
-            Y_subsampled, time_idx = soft_index(Y_fullFull, time_map)
+            time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
+            seen = set()
+            unique_time_points = [x for x in time_points if not (x in seen or seen.add(x))]
+            #Y_subsampled, time_idx = soft_index(Y_fullFull, time_map)
+            time_idx = None
+            Y_subsampled = Y_fullFull[:, unique_time_points, :]
             
             # Subsample Y_subsampled 3rd dimension (gene nodes) to calculate loss
             mask = torch.tensor([i not in missing_indexes for i in range(len(node_labels))])

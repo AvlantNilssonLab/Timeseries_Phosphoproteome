@@ -138,22 +138,25 @@ class bionetworkFunction(torch.autograd.Function):
             b_celltype_old = torch.zeros(bias.shape, dtype=torch.double).detach().numpy()
         
         if b_celltype is None:
-            b_celltype = celltype_linear.detach().numpy()
-
-            '''# Ensure that most of the nodes stay as they are except from specified percentage when biases are created
+            # Ensure that most of the nodes stay as they are except from specified percentage when biases are created
             num_elements = bias.numel()
             num_non_zero = int(num_elements * celltype_percent)
             mask = torch.zeros(num_elements, dtype=torch.bool)
             mask[:num_non_zero] = 1
             mask = mask[torch.randperm(num_elements)].reshape(bias.shape)
-            celltype_linear = celltype_linear * mask'''
+            celltype_linear = celltype_linear * mask
+            
+            b_celltype = celltype_linear.detach().numpy()
 
+        torch.manual_seed(123)
         bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy() + b_celltype_old + b_celltype  # Add celltype and celltype from previous generation terms to bias
         xhat = numpy.zeros(bIn.shape, dtype = bIn.dtype)
         
         xhatBefore = xhat.copy()
         
         xhatFull = numpy.zeros((bIn.shape[0], bIn.shape[1], parameters['iterations']), dtype=bIn.dtype)
+        
+        cnt = 0
         for i in range(parameters['iterations']):
             if i>40: #normally takes around 40 iterations to reach steady state
                 if i>41:
@@ -164,7 +167,12 @@ class bionetworkFunction(torch.autograd.Function):
             xhat += bIn
             xhat = activation(xhat, parameters['leak'])
             xhatFull[:, :, i] = xhat
+            cnt += 1
 
+        # Pad with steady state values
+        for j in range(cnt, parameters['iterations']):
+            xhatFull[:, :, j] = xhat
+            
         output = torch.from_numpy(xhat)
         output.requires_grad_()
         output = output.transpose(0, 1)
