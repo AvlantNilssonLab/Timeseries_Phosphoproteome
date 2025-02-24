@@ -628,8 +628,8 @@ class ProjectOutput(nn.Module):
     #     self.output_node_order = self.output_node_order.to(device)
 
 
-'''class CumsumMapping(nn.Module):
-    def __init__(self, bionet_params: Dict[str, float], K: int = 7):
+class CumsumMapping(nn.Module):
+    def __init__(self, bionet_params: Dict[str, float], K: int = 8):
         """
         Parameter
         ----------
@@ -647,39 +647,63 @@ class ProjectOutput(nn.Module):
         super().__init__()
         self.L = bionet_params['max_steps']
         self.K = K
-        # Initialize K raw parameters; these will be converted into positive increments.
-        self.delta_raw = nn.Parameter(torch.randn(K))
-        #self.x_lower = nn.Parameter(torch.tensor(0.0))
-        #self.x_diff = nn.Parameter(torch.tensor(0.0))
+        
+        # Initialize K raw parameters for increments.
+        # We set the first element to a very low value (e.g., -3) so that softplus gives a small number,
+        # and initialize the others to a constant so that softplus outputs ~1.
+        self.delta_raw = nn.Parameter(torch.empty(K))
+        nn.init.constant_(self.delta_raw, 0.541)  # so softplus(0.541) ≈ 1.0
+        with torch.no_grad():
+            self.delta_raw[0] = -3.0  # so softplus(-3.0) ≈ 0.05
+        
+        # Learnable parameter for the upper bound.
+        # We want u to lie in (0, L), so we use a sigmoid scaling.
+        self.u_raw = nn.Parameter(torch.tensor(0.0))  # initial u ~ L * sigmoid(0)=L/2
+        
+        # Learnable nonlinearity parameter alpha.
+        # Initialize to a negative value to bias more anchors toward the beginning.
+        self.alpha = nn.Parameter(torch.tensor(-1.0))
     
     def forward(self):
         """
         Returns
-        ----------
-        mapping : torch.Tensor
-        Tensor of shape (K,) with continuous indices in [0, L-1] that assign each training time point to a hidden state.
+        -------
+        mapping : torch.Tensor of shape (K,)
+            Continuous mapping indices that lie in [0, u],
+            where u is learnable and u < L.
         """
-        # Compute lower bound
-        #lower_bound = (self.L - 1) * torch.sigmoid(self.x_lower)
-        # Calculate the remaining range is (L-1 - lower_bound) with sigmoid to get fraction
-        #diff = (self.L - 1 - lower_bound) * torch.sigmoid(self.x_diff)
-        #upper_bound = lower_bound + diff  # so always upper_bound >= lower_bound
+        L = self.L
         
-        deltas = F.softplus(self.delta_raw)  # Force positive values
-        anchors = torch.cumsum(deltas, dim=0)  # Enforce monotonicity
-
-        # Normalize so that the last anchor is L-1
-        normalized = anchors / anchors[-1]
-        #mapping = lower_bound + normalized * (upper_bound - lower_bound)
-        mapping = normalized * (self.L - 1)
+        # Compute learnable upper bound u in (0, L)
+        u = L * torch.sigmoid(self.u_raw)
         
+        # Compute raw anchors from delta_raw:
+        deltas = F.softplus(self.delta_raw)   # ensure positive increments
+        anchors = torch.cumsum(deltas, dim=0)   # monotonic increasing
+        # Shift so the first anchor is zero:
+        anchors_shifted = anchors - anchors[0]
+        
+        # Normalize anchors to [0,1]:
+        normalized = anchors_shifted / (anchors_shifted[-1] + 1e-8)
+        
+        # Apply a nonlinear mapping function:
+        # mapping(x) = u * (exp(alpha*x) - 1) / (exp(alpha) - 1)
+        # If alpha is near zero, fall back to linear mapping.
+        eps = 1e-6
+        if torch.abs(self.alpha) < eps:
+            mapping = u * normalized
+        else:
+            mapping = u * (torch.exp(self.alpha * normalized) - 1) / (torch.exp(self.alpha) - 1)
+        
+        # Enforce that the mapping values are less than L.
+        mapping = torch.clamp(mapping, 0, L - 1)
         return mapping
     
     def print_gradients(self):
         if self.delta_raw.grad is not None:
             print("Gradient of delta_raw:", self.delta_raw.grad)
         else:
-            print("Gradient of delta_raw is None")'''
+            print("Gradient of delta_raw is None")
     
 class SignalingModel(torch.nn.Module):
     """Constructs the signaling network based RNN."""
@@ -691,7 +715,7 @@ class SignalingModel(torch.nn.Module):
                  source_label: str = 'source', target_label: str = 'target', 
                  bionet_params: Dict[str, float] = None , 
                  activation_function: str='MML', dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888,
-                 use_cell_line_network: bool = True, hidden_layers: Dict[int, int] = None, n_timepoints: int = 7):
+                 use_cell_line_network: bool = True, hidden_layers: Dict[int, int] = None, n_timepoints: int = 8):
         """Parse the signaling network and build the model layers.
 
         Parameters
@@ -777,7 +801,7 @@ class SignalingModel(torch.nn.Module):
                                           output_labels = self.y_out.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 
                                           dtype = self.dtype, device = device)
-        #self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
+        self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
         
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
                  weight_label: str = 'mode_of_action', source_label: str = 'source', target_label: str = 'target'):
