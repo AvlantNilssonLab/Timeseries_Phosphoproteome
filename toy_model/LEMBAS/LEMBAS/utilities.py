@@ -138,12 +138,13 @@ def initialize_progress(max_iter: int):
     stats['test'] = np.nan*np.ones(max_iter)
     stats['learning_rate'] = np.nan*np.ones(max_iter)
     stats['violations'] = np.nan*np.ones(max_iter)
+    stats['mapping'] = [[] for _ in range(max_iter)]
 
     return stats
 
 def update_progress(stats : dict, iter: int, 
                   loss: List[float]=None, eig: List[float]=None, 
-                  learning_rate: float=None, n_sign_mismatches: float=None):
+                  learning_rate: float=None, n_sign_mismatches: float=None, idx_mon: List[int]=None):
     """Updates various stats of the progress of training the model.
 
     Parameters
@@ -179,6 +180,9 @@ def update_progress(stats : dict, iter: int,
         stats['violations'][iter] = n_sign_mismatches
     
     stats['iter_time'][iter] = time.time()
+    
+    if idx_mon is not None:
+        stats['mapping'][iter] = np.array(idx_mon)
 
     return stats
 
@@ -203,7 +207,8 @@ def print_stats(stats, iter):
         msg += ', r={:.5f}'.format(stats['learning_rate'][iter])
     if not np.isnan(stats['violations'][iter]):
         msg += ', v={:.0f}'.format(stats['violations'][iter])
-        
+    if len(stats['mapping'][iter]) > 0:
+        msg += f', Time-mapping index: {stats["mapping"][iter].astype(int).tolist()}'
     print(msg)
 
 def get_moving_average(values: np.array, n_steps: int):

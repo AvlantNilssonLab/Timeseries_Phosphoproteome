@@ -196,9 +196,9 @@ def soft_index(Y: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
     
     # Perform linear interpolation:
     Y_selected = (1 - weight) * Y_floor + weight * Y_ceil
-    time_idx = torch.round((floor_idx + ceil_idx)/2)
+    #time_idx = torch.round((floor_idx + ceil_idx)/2)
     
-    return Y_selected.to(Y.device), time_idx
+    return Y_selected.to(Y.device), floor_idx_full, ceil_idx_full, weight
 
 
 def train_signaling_model(mod,
@@ -409,7 +409,7 @@ def train_signaling_model(mod,
             time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
             seen = set()
             unique_time_points = [x for x in time_points if not (x in seen or seen.add(x))]
-            Y_subsampled, time_idx = soft_index(Y_fullFull, time_map)
+            Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
             #time_idx = None
             #Y_subsampled = Y_fullFull[:, unique_time_points, :]
             
@@ -447,9 +447,13 @@ def train_signaling_model(mod,
             # store
             cur_eig.append(spectral_radius)
             cur_loss.append(fit_loss.item())
-    
+
+        # Approximate index for monitoring
+        idx_mon = (1 - weight) * floor_idx_full + weight * ceil_idx_full
+        idx_mon = idx_mon[0, :, 0].tolist()
+        idx_mon_int = torch.round(idx_mon)
         stats = utils.update_progress(stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
-                                     n_sign_mismatches = mod.signaling_network.count_sign_mismatch())
+                                     n_sign_mismatches = mod.signaling_network.count_sign_mismatch(), idx_mon = idx_mon)
         
         if break_nan and (e % (hyper_params['max_iter']/100) == 0):
             param_names = []
@@ -464,7 +468,6 @@ def train_signaling_model(mod,
         
         if verbose and e % 250 == 0:
             utils.print_stats(stats, iter = e)
-            print(time_idx)
         
         if np.logical_and(e % reset_epoch == 0, e>0):
             optimizer.state = reset_state.copy()
@@ -475,6 +478,6 @@ def train_signaling_model(mod,
         print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
     if split_by == 'time':
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, train_time_points, test_time_points, missing_indexes, time_idx
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, train_time_points, test_time_points, missing_indexes, floor_idx_full, ceil_idx_full, weight
     else:
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_train_index, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_indexes, time_idx
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_train_index, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_indexes, floor_idx_full, ceil_idx_full, weight
