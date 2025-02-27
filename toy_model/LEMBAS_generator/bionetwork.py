@@ -156,7 +156,7 @@ class bionetworkFunction(torch.autograd.Function):
             xhat = numpy.zeros(bIn.shape, dtype = bIn.dtype)
         else:
             xhat = xhat_0
-
+        
         xhatBefore = xhat.copy()
         
         xhatFull = numpy.zeros((bIn.shape[0], bIn.shape[1], parameters['iterations']), dtype=bIn.dtype)
@@ -190,8 +190,8 @@ class bionetworkFunction(torch.autograd.Function):
         ctx.xRaw = A.dot(xhat) + bIn  #When converged this is the same as taking inv(activation(xhat))
         ctx.x = xhat
         ctx.parameters = parameters
-        xhat_ss = xhat
-        return output, outputFull, b_celltype, xhat_ss
+        
+        return output, outputFull, b_celltype
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -240,9 +240,9 @@ class model(torch.nn.Module):
         fullX = self.inputLayer(X)
         # The code is calling a method `network` on the object `self` with the argument `fullX` and
         # assigning the result to the variable `fullY`.
-        fullY, fullYFull, b_celltype, xhat_ss = self.network(fullX)
+        fullY, fullYFull, b_celltype = self.network(fullX)
         Yhat = self.projectionLayer(fullY)
-        return Yhat, fullY, fullYFull, b_celltype, xhat_ss
+        return Yhat, fullY, fullYFull, b_celltype
 
 
 def spectralLoss(signalingModel, YhatFull, weights, expFactor = 20, lb=0.5):

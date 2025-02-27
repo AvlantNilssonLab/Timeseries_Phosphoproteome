@@ -451,7 +451,6 @@ def train_signaling_model(mod,
         # Approximate index for monitoring
         idx_mon = (1 - weight) * floor_idx_full + weight * ceil_idx_full
         idx_mon = idx_mon[0, :, 0].tolist()
-        idx_mon_int = torch.round(idx_mon)
         stats = utils.update_progress(stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
                                      n_sign_mismatches = mod.signaling_network.count_sign_mismatch(), idx_mon = idx_mon)
         
