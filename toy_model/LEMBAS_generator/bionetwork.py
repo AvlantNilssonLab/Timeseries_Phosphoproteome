@@ -146,10 +146,10 @@ class bionetworkFunction(torch.autograd.Function):
             mask = mask[torch.randperm(num_elements)].reshape(bias.shape)
             celltype_linear = celltype_linear * mask
             
-            b_celltype = celltype_linear.detach().numpy()
+            b_celltype = celltype_linear.detach().numpy() + b_celltype_old
 
         torch.manual_seed(123)
-        bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy() + b_celltype_old + b_celltype  # Add celltype and celltype from previous generation terms to bias
+        bIn = x.transpose(0, 1).detach().numpy() + bias.detach().numpy() + b_celltype  # Add celltype and celltype from previous generation terms to bias
         
         # xhat initialization
         if xhat_0 is None:
