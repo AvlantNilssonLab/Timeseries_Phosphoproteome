@@ -2,7 +2,7 @@
 Defines the various layers in the SignalingModel RNN.
 """
 
-from typing import Dict, List, Union, Annotated
+from typing import Dict, List, Union, Annotated, Any
 from annotated_types import Ge
 import copy
 
@@ -141,6 +141,61 @@ class CellLineNetwork(nn.Module):
         return X_bias
     
 
+class XssCellLineNetwork(nn.Module):
+    """Fully connected network to handle cell line information."""
+    def __init__(self, input_dim: int, hidden_layers: Dict[int, int], output_dim: int, dtype: torch.dtype = torch.float32, device: str = 'cpu'):
+        """
+        Initialization method.
+
+        Parameters
+        ----------
+        input_dim : int
+            Number of input neurons (number of cell lines).
+        hidden_layers : Dict[int, int]
+            Dictionary specifying the number of hidden layers and their sizes. Keys are layer indices (starting from 1) and values are the number of neurons.
+        output_dim : int
+            Number of output neurons (same as the shape of the bias in X_bias).
+        dtype : torch.dtype, optional
+            Datatype to store values in torch, by default torch.float32.
+        device : str, optional
+            Whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu".
+        """
+        super().__init__()
+        self.device = device
+        self.dtype = dtype
+
+        layers = []
+        prev_dim = input_dim
+
+        # Add hidden layers if any
+        if hidden_layers:
+            for i in range(1, len(hidden_layers) + 1):
+                layers.append(nn.Linear(prev_dim, hidden_layers[i]).to(device, dtype))
+                layers.append(nn.ReLU())
+                prev_dim = hidden_layers[i]
+
+        # Add output layer
+        layers.append(nn.Linear(prev_dim, output_dim).to(device, dtype))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, X_cell: torch.Tensor):
+        """
+        Forward pass to compute the bias term.
+
+        Parameters
+        ----------
+        X_cell : torch.Tensor
+            The cell line input tensor. Shape is (samples x cell lines).
+
+        Returns
+        -------
+        X_bias : torch.Tensor
+            The computed bias term. Shape is (samples x output_dim).
+        """
+        X_bias = self.network(X_cell)
+        return X_bias
+
+
 class BioNet(nn.Module):
     """Builds the RNN on the signaling network topology."""
     def __init__(self, edge_list: np.array, 
@@ -151,7 +206,8 @@ class BioNet(nn.Module):
                  dtype: torch.dtype=torch.float32, 
                  device: str = 'cpu', 
                  seed: int = 888,
-                 cell_line_network: CellLineNetwork = None):
+                 cell_line_network: CellLineNetwork = None,
+                 xss_cell_line_network: XssCellLineNetwork = None):
         """Initialization method.
 
         Parameters
@@ -213,7 +269,8 @@ class BioNet(nn.Module):
         self.onestepdelta_activation_factor = activation_function_map[activation_function]['onestepdelta']
         
         self.cell_line_network = cell_line_network
-
+        self.xss_cell_line_network = xss_cell_line_network
+        
     def initialize_weight_values(self):
         """Initialize the RNN weight_values for all interactions in the signaling network.
 
@@ -329,17 +386,20 @@ class BioNet(nn.Module):
             cell_line_bias = self.cell_line_network(X_cell)
             X_bias = X_bias + cell_line_bias.T  # Add the cell line bias term
         
-        X_new = torch.zeros_like(X_bias) #initialize all values at 0
+        if self.xss_cell_line_network is not None:
+            X_new = self.xss_cell_line_network(X_cell).T  # initialize at cell line steady state
+        else:
+            X_new = torch.zeros_like(X_bias)  # initialize all values at 0
         
         # Initialize array to store all predictions
-        X_newFull = torch.zeros((X_bias.shape[0], X_bias.shape[1], self.training_params['max_steps']), dtype=X_bias.dtype, device=X_bias.device)
+        X_new_list = []
         cnt = 0
         for t in range(self.training_params['max_steps']): # like an RNN, updating from previous time step
             X_old = X_new
             X_new = torch.mm(self.weights, X_new) # scale matrix by edge weights
             X_new = X_new + X_bias  # add original values and bias       
             X_new = self.activation(X_new, self.training_params['leak'])
-            X_newFull[:, :, t] = X_new  # Store prediction of time step t
+            X_new_list.append(X_new)  # Store prediction of time step t
             if (t % 10 == 0) and (t > 20):
                 diff = torch.max(torch.abs(X_new - X_old))    
                 if diff.lt(self.training_params['tolerance']):
@@ -348,8 +408,9 @@ class BioNet(nn.Module):
         
         # Pad with steady state values if time-loop breaks early
         for j in range(cnt, self.training_params['max_steps']):
-            X_newFull[:, :, j] = X_new
+            X_new_list.append(X_new)
         
+        X_newFull = torch.stack(X_new_list, dim=2)  # structure time dimension by converting list of 2d tensors to 3d tensor
         Y_full = X_new.T
         Y_fullFull = X_newFull.permute(1, 2, 0)
         return Y_full, Y_fullFull
@@ -713,9 +774,10 @@ class SignalingModel(torch.nn.Module):
                  projection_amplitude_in: Union[int, float] = 1, projection_amplitude_out: float = 1,
                  ban_list: List[str] = None, weight_label: str = 'mode_of_action', 
                  source_label: str = 'source', target_label: str = 'target', 
-                 bionet_params: Dict[str, float] = None , 
-                 activation_function: str='MML', dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888,
-                 use_cell_line_network: bool = True, hidden_layers: Dict[int, int] = None, n_timepoints: int = 8):
+                 bionet_params: Dict[str, float] = None, 
+                 activation_function: str='MML', dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888, 
+                 module_params: Dict[str, Any] = None):
+                 #use_cell_line_network: bool = True, hidden_layers: Dict[int, int] = None, n_timepoints: int = 8
         """Parse the signaling network and build the model layers.
 
         Parameters
@@ -755,12 +817,12 @@ class SignalingModel(torch.nn.Module):
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
         seed : int
             random seed for torch and numpy operations, by default 888
-        use_cell_line_network : bool, optional
-            whether to use the cell line network, by default True
-        hidden_layers : Dict[int, int]
-            Dictionary specifying the number of hidden layers and their sizes. Keys are layer indices (starting from 1) and values are the number of neurons.
-        n_timepoints : int
-            Number of time points in the training dataset
+        module_params : Dict[str, Any], optional 
+            parameters for the extra modules created for the time-series phosphoproteome problem, by default None
+            Key values included:
+                - 'use_cln' : whether to use the cell line network, by default True
+                - 'cln_hidden_layers': Dictionary specifying the number of hidden layers and their sizes. Keys are layer indices (starting from 1) and values are the number of neurons.
+                - 'n_timepoints': Number of time points in the training dataset
         """
         super().__init__()
         self.dtype = dtype
@@ -779,6 +841,13 @@ class SignalingModel(torch.nn.Module):
         else:
             bionet_params = self.set_training_parameters(**bionet_params)
 
+        # Access the parameters of the new modules | time series mapping, cell line encoding
+        use_cln = module_params['use_cln']
+        cln_hidden_layers = module_params['cln_hidden_layers']
+        use_xssn = module_params['use_cln']
+        xssn_hidden_layers = module_params['cln_hidden_layers']
+        n_timepoints = module_params['n_timepoints']
+        
         # filter for nodes in the network, sorting by node_labels order
         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
         self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
@@ -796,7 +865,8 @@ class SignalingModel(torch.nn.Module):
                                         bionet_params = bionet_params, 
                                         activation_function = activation_function, 
                                         dtype = self.dtype, device = self.device, seed = self.seed,
-                                        cell_line_network = CellLineNetwork(input_dim=X_cell.shape[1], hidden_layers=hidden_layers, output_dim=len(node_labels), dtype=self.dtype, device=self.device) if use_cell_line_network else None)
+                                        cell_line_network = CellLineNetwork(input_dim=X_cell.shape[1], hidden_layers=cln_hidden_layers, output_dim=len(node_labels), dtype=self.dtype, device=self.device) if use_cln else None,
+                                        xss_cell_line_network = XssCellLineNetwork(input_dim=X_cell.shape[1], hidden_layers=xssn_hidden_layers, output_dim=len(node_labels), dtype=self.dtype, device=self.device) if use_xssn else None)
         self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
                                           output_labels = self.y_out.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 
@@ -883,7 +953,7 @@ class SignalingModel(torch.nn.Module):
         params = {k: v for k,v in params.items() if k in allowed_params}
     
         return params
-
+    
     def forward(self, X_in, X_cell):
         """Linearly scales ligand inputs, learns weights for signaling network interactions, and transforms this to TF activity. See
         `forward` methods of each layer for details."""
