@@ -292,7 +292,7 @@ def train_signaling_model(mod,
 
     mod = mod.copy() # do not overwrite input
     #optimizer = optimizer(mod.parameters(), lr=1, weight_decay=0)
-    lr_factor = 100
+    lr_factor = 10
     base_lr = hyper_params['learning_rate']
     time_layer_lr = base_lr * lr_factor  # Higher learning rate for the time-mapping layer
 
@@ -301,6 +301,7 @@ def train_signaling_model(mod,
         {'params': mod.input_layer.parameters(), 'lr': base_lr},
         {'params': mod.signaling_network.parameters(), 'lr': base_lr},
         {'params': mod.output_layer.parameters(), 'lr': base_lr},
+        {'params': mod.nodes_sites_layer.parameters(), 'lr': base_lr},
         {'params': mod.time_layer.parameters(), 'lr': time_layer_lr}
     ])
     reset_state = optimizer.state.copy()
@@ -311,14 +312,14 @@ def train_signaling_model(mod,
     X_in = mod.X_in
     y_out = mod.y_out
     X_cell = mod.X_cell
+    nodes_sites_map = mod.nodes_sites_map
     
     # identify genes to remove from prediction (all PKN nodes) to calculate loss
     node_labels = sorted(pd.concat([net['source'], net['target']]).unique())
-    missing_labels = [label for label in node_labels if label not in list(y_out.columns)]  # Identify missing genes
-    missing_indexes = [node_labels.index(label) for label in missing_labels]   
-    
+    missing_labels = [label for label in node_labels if label not in list(nodes_sites_map.columns)]  # Identify missing genes
+    missing_indexes = [node_labels.index(label) for label in missing_labels]  
+
     # set up data objects
-    
     if not train_seed:
         train_seed = mod.seed
     
@@ -401,6 +402,12 @@ def train_signaling_model(mod,
             network_noise = torch.randn(X_full.shape, device = X_full.device)
             X_full = X_full + (hyper_params['noise_level'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
             Y_full, Y_fullFull = mod.signaling_network(X_full, X_cell_) # train signaling network weights
+            
+            # Subsample Y_subsampled 3rd dimension (signaling nodes) to calculate loss before map the phosphosites
+            mask = torch.tensor([i not in missing_indexes for i in range(len(node_labels))])
+            Y_fullFull = Y_fullFull[:, :, mask]
+            Y_fullFull = mod.nodes_sites_layer(Y_fullFull)
+            
             time_map = mod.time_layer()
 
             #Y_hat = mod.output_layer(Y_full)
@@ -412,10 +419,6 @@ def train_signaling_model(mod,
             Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
             #time_idx = None
             #Y_subsampled = Y_fullFull[:, unique_time_points, :]
-            
-            # Subsample Y_subsampled 3rd dimension (gene nodes) to calculate loss
-            mask = torch.tensor([i not in missing_indexes for i in range(len(node_labels))])
-            Y_subsampled = Y_subsampled[:, :, mask]
             
             # Mask NaN with 0 to skip loss calculation
             y_out_.masked_fill_(~mask_, 0.0)

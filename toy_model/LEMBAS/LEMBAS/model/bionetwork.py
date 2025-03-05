@@ -407,7 +407,7 @@ class BioNet(nn.Module):
             cnt += 1
         
         # Pad with steady state values if time-loop breaks early
-        for j in range(cnt, self.training_params['max_steps']):
+        for j in range(cnt, self.training_params['max_steps']-1):
             X_new_list.append(X_new)
         
         X_newFull = torch.stack(X_new_list, dim=2)  # structure time dimension by converting list of 2d tensors to 3d tensor
@@ -689,6 +689,76 @@ class ProjectOutput(nn.Module):
     #     self.output_node_order = self.output_node_order.to(device)
 
 
+class NodesSitesMapping(nn.Module):
+    """Fully connected network to map signaling nodes to phosphosites."""
+    def __init__(self, nodes_sites_map: pd.DataFrame, hidden_layers: Dict[int, int] = None, dtype: torch.dtype = torch.float32, device: str = 'cpu'):
+        """
+        Initialization method.
+
+        Parameters
+        ----------
+        nodes_sites_map : pd.DataFrame
+            DataFrame with nodes as columns and sites as rows.
+        hidden_layers : Dict[int, int], optional
+            Dictionary specifying the number of hidden layers and their sizes. Keys are layer indices (starting from 1) and values are the number of neurons.
+        dtype : torch.dtype, optional
+            Datatype to store values in torch, by default torch.float32.
+        device : str, optional
+            Whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu".
+        """
+        super().__init__()
+        self.device = device
+        self.dtype = dtype
+
+        self.nodes_sites_map = torch.tensor(nodes_sites_map.values, dtype=self.dtype, device=self.device)
+        self.mask = self.nodes_sites_map != 0
+        
+        input_dim = nodes_sites_map.shape[1]  # Number of nodes
+        output_dim = nodes_sites_map.shape[0]  # Number of sites
+
+        layers = []
+        prev_dim = input_dim
+
+        # Add hidden layers if any
+        if hidden_layers:
+            for i in range(1, len(hidden_layers) + 1):
+                layers.append(nn.Linear(prev_dim, hidden_layers[i]).to(device, dtype))
+                layers.append(nn.ReLU())
+                prev_dim = hidden_layers[i]
+
+        # Add output layer
+        layers.append(nn.Linear(prev_dim, output_dim).to(device, dtype))
+        self.network = nn.Sequential(*layers)
+        
+        # Initialize weights with mask
+        self.network[-1].weight.data *= self.mask
+        
+        # Set requires_grad to False for zero weights
+        self.network[-1].weight.requires_grad = True
+        self.network[-1].weight.register_hook(lambda grad: grad * self.mask)
+        
+    def forward(self, Y_full: torch.Tensor):
+        """
+        Forward pass to map signaling nodes to phosphosites.
+
+        Parameters
+        ----------
+        Y_full : torch.Tensor
+            The signaling network output tensor. Shape is (samples x time points x nodes).
+
+        Returns
+        -------
+        Y_mapped : torch.Tensor
+            The mapped output tensor. Shape is (samples x time points x sites).
+        """
+        samples, time_points, nodes = Y_full.shape
+        Y_full_reshaped = Y_full.view(samples * time_points, nodes)
+        Y_mapped_reshaped = self.network(Y_full_reshaped)
+        Y_mapped = Y_mapped_reshaped.view(samples, time_points, -1)
+        
+        return Y_mapped
+
+
 class CumsumMapping(nn.Module):
     def __init__(self, bionet_params: Dict[str, float], K: int = 8):
         """
@@ -770,7 +840,7 @@ class SignalingModel(torch.nn.Module):
     """Constructs the signaling network based RNN."""
     DEFAULT_TRAINING_PARAMETERS = {'target_steps': 100, 'max_steps': 300, 'exp_factor': 20, 'leak': 0.01, 'tolerance': 1e-5}
     
-    def __init__(self, net: pd.DataFrame, X_in: pd.DataFrame, y_out: pd.DataFrame, X_cell: pd.DataFrame,
+    def __init__(self, net: pd.DataFrame, X_in: pd.DataFrame, y_out: pd.DataFrame, X_cell: pd.DataFrame, nodes_sites_map: pd.DataFrame,
                  projection_amplitude_in: Union[int, float] = 1, projection_amplitude_out: float = 1,
                  ban_list: List[str] = None, weight_label: str = 'mode_of_action', 
                  source_label: str = 'source', target_label: str = 'target', 
@@ -791,6 +861,10 @@ class SignalingModel(torch.nn.Module):
             input ligand concentrations. Index represents samples and columns represent a ligand. Values represent amount of ligand introduced (e.g., concentration). 
         y_out : pd.DataFrame
             output TF activities. Index represents samples and columns represent TFs. Values represent activity of the TF. 
+        X_cell : pd.DataFrame
+            One hot encoded cell types.  Index represents samples and columns represent cell types.
+        nodes_sites_map : pd.DataFrame
+            Nodes to sites mapping.  Index represents phosphosites and columns represent signaling nodes.
         ban_list : List[str], optional
             a list of signaling network nodes to disregard, by default None
         projection_amplitude_in : Union[int, float]
@@ -846,12 +920,17 @@ class SignalingModel(torch.nn.Module):
         cln_hidden_layers = module_params['cln_hidden_layers']
         use_xssn = module_params['use_cln']
         xssn_hidden_layers = module_params['cln_hidden_layers']
+        nsl_hidden_layers = module_params['nsl_hidden_layers']
         n_timepoints = module_params['n_timepoints']
         
         # filter for nodes in the network, sorting by node_labels order
         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
-        self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
+        #self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
+        intersecting_nodes = np.intersect1d(nodes_sites_map.columns.values, node_labels)
+        self.y_out = y_out.loc[:, nodes_sites_map[intersecting_nodes].index]  # Map the right nodes to the right sites
         self.X_cell = X_cell
+        self.nodes_sites_map = nodes_sites_map
+        self.node_labels = node_labels
         
         # define model layers
         self.input_layer = ProjectInput(node_idx_map = self.node_idx_map, 
@@ -868,9 +947,13 @@ class SignalingModel(torch.nn.Module):
                                         cell_line_network = CellLineNetwork(input_dim=X_cell.shape[1], hidden_layers=cln_hidden_layers, output_dim=len(node_labels), dtype=self.dtype, device=self.device) if use_cln else None,
                                         xss_cell_line_network = XssCellLineNetwork(input_dim=X_cell.shape[1], hidden_layers=xssn_hidden_layers, output_dim=len(node_labels), dtype=self.dtype, device=self.device) if use_xssn else None)
         self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
-                                          output_labels = self.y_out.columns.values, 
+                                          output_labels = self.nodes_sites_map.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 
                                           dtype = self.dtype, device = device)
+        self.nodes_sites_layer = NodesSitesMapping(nodes_sites_map = self.nodes_sites_map, 
+                                                   hidden_layers = nsl_hidden_layers, 
+                                                   dtype = self.dtype, 
+                                                   device = self.device)
         self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
         
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
@@ -954,11 +1037,15 @@ class SignalingModel(torch.nn.Module):
     
         return params
     
-    def forward(self, X_in, X_cell):
+    def forward(self, X_in, X_cell, missing_indexes):
         """Linearly scales ligand inputs, learns weights for signaling network interactions, and transforms this to TF activity. See
         `forward` methods of each layer for details."""
         X_full = self.input_layer(X_in) # input ligands to signaling network
         Y_full, Y_fullFull = self.signaling_network(X_full, X_cell) # RNN of full signaling network
+        # Mask for non-overlapping signaling nodes  with PKN before mapping to phosphosites
+        mask = torch.tensor([i not in missing_indexes for i in range(len(self.node_labels))])
+        Y_fullFull = Y_fullFull[:, :, mask]
+        Y_fullFull = self.nodes_sites_layer(Y_fullFull)  # Map signaling nodes to phosphosites
         Y_hat = self.output_layer(Y_full) # TF outputs of signaling network
         return Y_hat, Y_full, Y_fullFull
     
