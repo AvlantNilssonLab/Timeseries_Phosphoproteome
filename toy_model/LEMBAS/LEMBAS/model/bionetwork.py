@@ -926,8 +926,8 @@ class SignalingModel(torch.nn.Module):
         # Access the parameters of the new modules | time series mapping, cell line encoding
         use_cln = module_params['use_cln']
         cln_hidden_layers = module_params['cln_hidden_layers']
-        use_xssn = module_params['use_cln']
-        xssn_hidden_layers = module_params['cln_hidden_layers']
+        use_xssn = module_params['use_xssn']
+        xssn_hidden_layers = module_params['xssn_hidden_layers']
         nsl_hidden_layers = module_params['nsl_hidden_layers']
         n_timepoints = module_params['n_timepoints']
         
