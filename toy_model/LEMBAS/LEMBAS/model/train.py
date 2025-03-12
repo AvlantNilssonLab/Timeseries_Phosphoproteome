@@ -52,6 +52,7 @@ def split_data(X_in: torch.Tensor,
             # Time split
             y_out = y_out.reset_index()
             y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1].astype(int)
+            y_out['Drug_CL'] = y_out['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
             unique_time_points = y_out['Time'].unique()
             
             # Ensure the first and last time points are always in the training set
@@ -60,22 +61,21 @@ def split_data(X_in: torch.Tensor,
             remaining_time_points = np.setdiff1d(unique_time_points, [first_time_point, last_time_point])
             
             # Determine number of time points for splits and randomly sample them
-            n_train_time_points = int(round(len(unique_time_points) * train_split_frac['train'])) - 2
+            n_train_time_points = int(round(len(unique_time_points) * train_split_frac['train'])) - 1
             np.random.seed(seed)
             train_time_points = np.random.choice(remaining_time_points, n_train_time_points, replace=False)
-            train_time_points = np.concatenate(([first_time_point], train_time_points, [last_time_point]))
-            test_time_points = np.setdiff1d(unique_time_points, train_time_points)
-            
+            train_time_points = np.sort((np.concatenate(([first_time_point], train_time_points, [last_time_point]))))
+            test_time_points = np.sort(np.setdiff1d(unique_time_points, train_time_points))
             print(f'Time points selected for training set: {train_time_points}')
             
             # Split the data based on the selected time points
             y_train = y_out[y_out['Time'].isin(train_time_points)]
             y_test = y_out[y_out['Time'].isin(test_time_points)]
-        
-            y_train = y_train.drop(columns=['Time'])
-            y_test = y_test.drop(columns=['Time'])
-            y_train = y_train.set_index('Drug_CL_Time')
-            y_test = y_test.set_index('Drug_CL_Time')
+            y_train = y_train.sort_values(by=['Time', 'Drug_CL'])
+            y_test = y_test.sort_values(by=['Time', 'Drug_CL'])
+            
+            y_train = y_train.set_index('Drug_CL_Time').drop(columns=['Time', 'Drug_CL'])
+            y_test = y_test.set_index('Drug_CL_Time').drop(columns=['Time', 'Drug_CL'])
             
             # Split X_in based on the conditions in y_train and y_test
             train_conditions = y_train.index.str.rsplit('_', n=1).str[0].unique()
@@ -347,6 +347,7 @@ def train_signaling_model(mod,
         X_cell_test = mod.df_to_tensor(X_cell_test)
     else:
         X_cell_train = mod.df_to_tensor(X_cell)
+        X_cell_test = mod.df_to_tensor(X_cell)
     
     mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean TF (across samples) loss
     
@@ -480,6 +481,6 @@ def train_signaling_model(mod,
         print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
     if split_by == 'time':
-        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, y_train, y_test, y_train_index, train_time_points, test_time_points, missing_indexes, floor_idx_full, ceil_idx_full, weight
+        return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_train_index, y_train, y_test, y_train_index, X_cell_train, X_cell_test, train_time_points, test_time_points, missing_indexes, floor_idx_full, ceil_idx_full, weight
     else:
         return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_train_index, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_indexes, floor_idx_full, ceil_idx_full, weight
