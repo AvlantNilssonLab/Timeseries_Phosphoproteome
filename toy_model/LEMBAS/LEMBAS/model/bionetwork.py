@@ -380,7 +380,8 @@ class BioNet(nn.Module):
         ----------
         X_full : torch.Tensor
             the linearly scaled ligand inputs. Shape is (samples x network nodes). Output of ProjectInput.
-
+        X_cell : torch.Tensor
+            the cell line input tensor. Shape is (samples x cell lines).
         Returns
         -------
         Y_full :  torch.Tensor
@@ -696,77 +697,105 @@ class ProjectOutput(nn.Module):
 
 
 class NodesSitesMapping(nn.Module):
-    """Fully connected network to map signaling nodes to phosphosites."""
+    """Layer to map signaling nodes to phosphosites with sparse connectivity.
+       The connectivity is defined by nodes_sites_map, a binary (0/1) DataFrame of shape (n_sites, n_nodes).
+       Only the connections indicated by 1 are learnable; we store these as a 1D parameter vector.
+    """
     def __init__(self, nodes_sites_map: pd.DataFrame, hidden_layers: Dict[int, int] = None, dtype: torch.dtype = torch.float32, device: str = 'cpu'):
         """
-        Initialization method.
-
         Parameters
         ----------
         nodes_sites_map : pd.DataFrame
-            DataFrame with nodes as columns and sites as rows.
+            DataFrame with sites as rows and signaling nodes as columns.
+            It must be one-hot (or sparse instead of dense) where 1 indicates a connection.
         hidden_layers : Dict[int, int], optional
-            Dictionary specifying the number of hidden layers and their sizes. Keys are layer indices (starting from 1) and values are the number of neurons.
+            Dictionary specifying any hidden layers before the final mapping.
         dtype : torch.dtype, optional
-            Datatype to store values in torch, by default torch.float32.
+            Data type for tensors.
         device : str, optional
-            Whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu".
+            "cpu" or "cuda", by default "cpu".
         """
         super().__init__()
         self.device = device
         self.dtype = dtype
 
-        self.nodes_sites_map = torch.tensor(nodes_sites_map.values, dtype=self.dtype, device=self.device)
-        self.mask = self.nodes_sites_map != 0
+        # Convert mapping to a tensor and create the boolean mask.
+        mapping_tensor = torch.tensor(nodes_sites_map.values, dtype=self.dtype, device=self.device)
+        self.mask = mapping_tensor != 0  # True where connection exists; shape: (n_sites, n_nodes)
         
         input_dim = nodes_sites_map.shape[1]  # Number of nodes
         output_dim = nodes_sites_map.shape[0]  # Number of sites
 
         layers = []
         prev_dim = input_dim
-
-        # Add hidden layers if any
+        
+        # Add hidden layers if specified.
         if hidden_layers:
             for i in range(1, len(hidden_layers) + 1):
                 layers.append(nn.Linear(prev_dim, hidden_layers[i]).to(device, dtype))
                 layers.append(nn.ReLU())
                 prev_dim = hidden_layers[i]
+        
+        # Learnable parameter vector for the allowed weights (nonzero in the mask) and a bias parameter for each output.
+        n_nonzero = int(self.mask.sum().item())
+        # Save the indices (row, col) where the mapping is 1.
+        self.indices = self.mask.nonzero(as_tuple=False)  # shape: (n_nonzero, 2)
+        
+        # Create a learnable vector for allowed connections.
+        self.real_weights = nn.Parameter(torch.ones(n_nonzero, dtype=self.dtype, device=self.device))
+        # Create bias per output (site)
+        self.bias = nn.Parameter(torch.zeros(output_dim, dtype=self.dtype, device=self.device))
+        
+        # Optionally store the output dimension.
+        self.output_dim = output_dim
 
-        # Add output layer
-        layers.append(nn.Linear(prev_dim, output_dim).to(device, dtype))
-        self.network = nn.Sequential(*layers)
-        
-        # Initialize weights with mask
-        self.network[-1].weight.data *= self.mask
-        
-        # Set requires_grad to False for zero weights
-        self.network[-1].weight.requires_grad = True
-        self.network[-1].weight.register_hook(lambda grad: grad * self.mask)
-        
     def forward(self, Y_full: torch.Tensor):
         """
         Forward pass to map signaling nodes to phosphosites.
-
+    
         Parameters
         ----------
         Y_full : torch.Tensor
-            The signaling network output tensor. Shape is (samples x time points x nodes).
-
+            The signaling network output tensor. Shape (samples, time_points, n_nodes).
+    
         Returns
         -------
         Y_mapped : torch.Tensor
-            The mapped output tensor. Shape is (samples x time points x sites).
+            The mapped output tensor. Shape (samples, time_points, n_sites).
         """
         samples, time_points, nodes = Y_full.shape
         Y_full_reshaped = Y_full.view(samples * time_points, nodes)
-        Y_mapped_reshaped = self.network(Y_full_reshaped)
+        
+        # Create a full weight matrix of shape (output_dim, n_nodes) filled with zeros.
+        full_weight = torch.zeros((self.output_dim, nodes), dtype=self.dtype, device=self.device)
+        # Fill the allowed entries with the learnable weights.
+        full_weight[self.indices[:, 0], self.indices[:, 1]] = self.real_weights
+        self.full_weight = full_weight
+        Y_mapped_reshaped = torch.nn.functional.linear(Y_full_reshaped, full_weight, self.bias)
         Y_mapped = Y_mapped_reshaped.view(samples, time_points, -1)
         
         return Y_mapped
+    
+    def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
+        """Get the L2 regularization term for the neural network parameters.
+        
+        Parameters
+        ----------
+        lambda_2 : Annotated[float, Ge(0)]
+            the regularization parameter, by default 0 (no penalty) 
+        
+        Returns
+        -------
+        bionet_L2 : torch.Tensor
+            the regularization term
+        """
+        bias_loss = lambda_L2 * torch.sum(torch.square(self.bias))
+        weight_loss = lambda_L2 * torch.sum(torch.square(self.real_weights - 1))
+        return weight_loss + bias_loss
 
 
 class CumsumMapping(nn.Module):
-    def __init__(self, bionet_params: Dict[str, float], K: int = 8):
+    def __init__(self, bionet_params: Dict[str, float], K: int = 8, init: int = None):
         """
         Parameter
         ----------
@@ -780,16 +809,23 @@ class CumsumMapping(nn.Module):
                 - 'exp_factor': _description_, by default 20
         K : Int
             Number of training time points
+        init : int, optional
+            Seed for random initialization, by default None.
         """
         super().__init__()
         self.L = bionet_params['max_steps']
         self.K = K
         
         # Initialize K raw parameters for increments.
-        # We set the first element to a very low value (e.g., -3) so that softplus gives a small number,
-        # and initialize the others to a constant so that softplus outputs ~1.
-        self.delta_raw = nn.Parameter(torch.empty(K))
-        nn.init.constant_(self.delta_raw, 0.541)  # so softplus(0.541) ≈ 1.0
+        if init is None:
+            # We set the first element to a very low value (e.g., -3) so that softplus gives a small number,
+            # and initialize the others to a constant so that softplus outputs ~1.
+            self.delta_raw = nn.Parameter(torch.empty(K))
+            nn.init.constant_(self.delta_raw, 0.541)  # so softplus(0.541) ≈ 1.0
+        else:
+            torch.manual_seed(init)
+            self.delta_raw = nn.Parameter(torch.rand(K))
+            
         with torch.no_grad():
             self.delta_raw[0] = -3.0  # so softplus(-3.0) ≈ 0.05
         
@@ -930,6 +966,7 @@ class SignalingModel(torch.nn.Module):
         xssn_hidden_layers = module_params['xssn_hidden_layers']
         nsl_hidden_layers = module_params['nsl_hidden_layers']
         n_timepoints = module_params['n_timepoints']
+        time_init = module_params['time_init']
         
         # filter for nodes in the network, sorting by node_labels order
         self.X_in = X_in
@@ -964,7 +1001,7 @@ class SignalingModel(torch.nn.Module):
                                                    hidden_layers = nsl_hidden_layers, 
                                                    dtype = self.dtype, 
                                                    device = self.device)
-        self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
+        self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints, init = time_init)
         
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
                  weight_label: str = 'mode_of_action', source_label: str = 'source', target_label: str = 'target'):
@@ -1074,7 +1111,7 @@ class SignalingModel(torch.nn.Module):
          : torch.Tensor
             the regularization term (as the sum of the regularization terms for each layer)
         """
-        return self.input_layer.L2_reg(lambda_L2) + self.signaling_network.L2_reg(lambda_L2) + self.output_layer.L2_reg(lambda_L2)
+        return self.input_layer.L2_reg(lambda_L2) + self.signaling_network.L2_reg(lambda_L2) + self.output_layer.L2_reg(lambda_L2) #+ self.nodes_sites_layer.L2_reg(lambda_L2/10)
 
     def ligand_regularization(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the ligand biases. Intuitively, extracellular ligands should not contribute to 
