@@ -427,7 +427,7 @@ def train_signaling_model(mod,
             
             # get prediction loss
             fit_loss = loss_fn(y_out_, Y_subsampled)
-
+            
             # get regularization losses
             sign_reg = mod.signaling_network.sign_regularization(lambda_L1 = hyper_params['moa_lambda_L1']) # incorrect MoA
             ligand_reg = mod.ligand_regularization(lambda_L2 = hyper_params['ligand_lambda_L2']) # ligand biases
