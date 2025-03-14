@@ -200,6 +200,23 @@ def soft_index(Y: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
     
     return Y_selected.to(Y.device), floor_idx_full, ceil_idx_full, weight
 
+def add_input_noise(X, noise_scale):
+    """
+    Adds Gaussian noise to the input tensor.
+
+    Parameters
+    ----------
+    X : torch.Tensor
+        Input tensor.
+    noise_scale : float
+        Scale factor used to multiply the noise.
+
+    Returns
+    -------
+    torch.Tensor
+        Noisy version of X.
+    """
+    return X + noise_scale * torch.randn_like(X)
 
 def train_signaling_model(mod,
                           net: pd.DataFrame,
@@ -211,7 +228,8 @@ def train_signaling_model(mod,
                           train_seed: int = None,
                           verbose: bool = True, 
                           break_nan: bool = True,
-                          split_by: Literal['time', 'condition'] = 'time'):
+                          split_by: Literal['time', 'condition'] = 'time',
+                          noise_scale: float = 0):
     """Trains the signaling model
 
     Parameters
@@ -259,6 +277,8 @@ def train_signaling_model(mod,
         whether to break the training loop if params contain nan
     split_by : Literal['time', 'condition'], optional
         criterion to split the data, by default 'time'
+    noise_scale : float, optional
+        scale factor used to multiply the noise, by default 0
 
     Returns
     -------
@@ -425,8 +445,10 @@ def train_signaling_model(mod,
             y_out_.masked_fill_(~mask_, 0.0)
             Y_subsampled.masked_fill_(~mask_, 0.0)
             
+            y_out_noise = add_input_noise(y_out_, noise_scale)  # Add noise to the output for robustness and overfitting prevention
+            
             # get prediction loss
-            fit_loss = loss_fn(y_out_, Y_subsampled)
+            fit_loss = loss_fn(y_out_noise, Y_subsampled)
             
             # get regularization losses
             sign_reg = mod.signaling_network.sign_regularization(lambda_L1 = hyper_params['moa_lambda_L1']) # incorrect MoA
