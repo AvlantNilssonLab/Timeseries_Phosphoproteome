@@ -794,6 +794,76 @@ class NodesSitesMapping(nn.Module):
         return weight_loss + bias_loss
 
 
+'''class NodesSitesMapping(nn.Module):
+    """Layer to map signaling nodes to phosphosites with sparse connectivity.
+       This version uses an embedding for each signaling node.
+       The one-hot connectivity (phosphosites x nodes) is stored in self.mapping_tensor.
+       For each node, we learn an embedding vector (of dimension emb_dim),
+       then compute a scalar factor by dotting with self.final_weight.
+       Finally, we use the weighted mapping to get the phosphosite output.
+    """
+    def __init__(self, nodes_sites_map: pd.DataFrame, emb_dim: int = 10, hidden_layers: Dict[int, int] = None,
+                 dtype: torch.dtype = torch.float32, device: str = 'cpu'):
+        super().__init__()
+        self.device = device
+        self.dtype = dtype
+
+        mapping_tensor = torch.tensor(nodes_sites_map.values, dtype=self.dtype, device=self.device)
+        self.mapping_tensor = mapping_tensor  # shape: (n_sites, n_nodes)
+        self.mask = mapping_tensor != 0  # Boolean mask to enforce connections
+
+        input_dim = nodes_sites_map.shape[1]   # Number of signaling nodes
+        self.output_dim = nodes_sites_map.shape[0]  # Number of phosphosites
+
+        self.embedding = nn.Parameter(torch.ones(input_dim, emb_dim, dtype=self.dtype, device=self.device))
+        self.final_weight = nn.Parameter(torch.ones(emb_dim, dtype=self.dtype, device=self.device))
+        
+        # Add hidden layers if needed
+        if hidden_layers:
+            # Build a deeper network that further transforms the embedding
+            layers = []
+            prev_dim = emb_dim
+            for i in range(1, len(hidden_layers) + 1):
+                layers.append(nn.Linear(prev_dim, hidden_layers[i]).to(device, dtype))
+                layers.append(nn.ReLU())
+                prev_dim = hidden_layers[i]
+            self.embedding_mlp = nn.Sequential(*layers)
+        else:
+            self.embedding_mlp = None
+    
+    def forward(self, Y_full: torch.Tensor):
+        """
+        Parameters:
+          Y_full : torch.Tensor
+              Signaling network output tensor, shape (samples, time_points, n_nodes)
+        Returns:
+          Y_mapped : torch.Tensor
+              Mapped phosphosite outputs, shape (samples, time_points, n_sites)
+        """
+        samples, time_points, nodes = Y_full.shape
+        Y_flat = Y_full.view(samples * time_points, nodes)  # shape (samples*time, n_nodes)
+        
+        if self.embedding_mlp is not None:
+            node_emb = self.embedding_mlp(self.embedding)  # shape: (n_nodes, emb_dim')
+        else:
+            node_emb = self.embedding  # shape: (n_nodes, emb_dim)
+        
+        node_factors = torch.matmul(node_emb, self.final_weight)  # shape (n_nodes,)
+        
+        # Enforce connections
+        full_mapping = self.mapping_tensor.float() * node_factors  # shape: (n_sites, n_nodes)
+        
+        Y_mapped_flat = torch.matmul(Y_flat, full_mapping.T)  # shape: (samples*time, n_sites)
+        Y_mapped = Y_mapped_flat.view(samples, time_points, self.output_dim)
+        return Y_mapped
+    
+    def L2_reg(self, lambda_L2: float = 0):
+        """Regularization: L2 penalization on the embedding and final weight."""
+        reg = lambda_L2 * (torch.sum(self.embedding**2) + torch.sum(self.final_weight**2))
+        # Optionally include additional regularization on bias if you add a bias later.
+        return reg'''
+
+
 class CumsumMapping(nn.Module):
     def __init__(self, bionet_params: Dict[str, float], K: int = 8, init: int = None):
         """
