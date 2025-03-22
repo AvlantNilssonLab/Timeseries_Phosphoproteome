@@ -21,7 +21,8 @@ REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'output_bias_lambda_L2': 1e-6,
                          'uniform_min': 0,
                    'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
 SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
-HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
+MODULE_PARAMS = {'use_time': True}
+HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS, **MODULE_PARAMS}
 
 def split_data(X_in: torch.Tensor, 
                y_out: torch.Tensor, 
@@ -431,9 +432,12 @@ def train_signaling_model(mod,
             time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
             seen = set()
             unique_time_points = [x for x in time_points if not (x in seen or seen.add(x))]
-            Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
-            #time_idx = None
-            #Y_subsampled = Y_fullFull[:, unique_time_points, :]
+            
+            use_time = hyper_params['use_time']
+            if use_time:
+                Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
+            else:
+                Y_subsampled = Y_fullFull[:, unique_time_points, :]
             
             # Mask NaN with 0 to skip loss calculation
             y_out_.masked_fill_(~mask_, 0.0)
@@ -468,9 +472,16 @@ def train_signaling_model(mod,
             cur_eig.append(spectral_radius)
             cur_loss.append(fit_loss.item())
 
-        # Approximate index for monitoring
-        idx_mon = (1 - weight) * floor_idx_full + weight * ceil_idx_full
-        idx_mon = idx_mon[0, :, 0].tolist()
+        if use_time:
+            # Approximate index for monitoring
+            idx_mon = (1 - weight) * floor_idx_full + weight * ceil_idx_full
+            idx_mon = idx_mon[0, :, 0].tolist()
+        else:
+            idx_mon = None
+            floor_idx_full = None
+            ceil_idx_full = None
+            weight = None
+        
         stats = utils.update_progress(stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
                                      n_sign_mismatches = mod.signaling_network.count_sign_mismatch(), idx_mon = idx_mon)
         

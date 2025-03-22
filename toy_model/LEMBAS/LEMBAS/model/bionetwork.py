@@ -701,7 +701,7 @@ class NodesSitesMapping(nn.Module):
        The connectivity is defined by nodes_sites_map, a binary (0/1) DataFrame of shape (n_sites, n_nodes).
        Only the connections indicated by 1 are learnable; we store these as a 1D parameter vector.
     """
-    def __init__(self, nodes_sites_map: pd.DataFrame, hidden_layers: Dict[int, int] = None, dtype: torch.dtype = torch.float32, device: str = 'cpu'):
+    def __init__(self, nodes_sites_map: pd.DataFrame, hidden_layers: Dict[int, int] = None, dtype: torch.dtype = torch.float32, device: str = 'cpu', use_phospho: bool = True):
         """
         Parameters
         ----------
@@ -714,6 +714,8 @@ class NodesSitesMapping(nn.Module):
             Data type for tensors.
         device : str, optional
             "cpu" or "cuda", by default "cpu".
+        use_phospho : bool, optional
+            Whether to use the phospho-specific weights, by default True.
         """
         super().__init__()
         self.device = device
@@ -741,12 +743,15 @@ class NodesSitesMapping(nn.Module):
         # Save the indices (row, col) where the mapping is 1.
         self.indices = self.mask.nonzero(as_tuple=False)  # shape: (n_nonzero, 2)
         
-        # Create a learnable vector for allowed connections.
-        self.real_weights = nn.Parameter(torch.ones(n_nonzero, dtype=self.dtype, device=self.device))
-        # Create bias per output (site)
-        self.bias = nn.Parameter(torch.zeros(output_dim, dtype=self.dtype, device=self.device))
+        # Create a learnable vector for allowed connections
+        if use_phospho:
+            self.real_weights = nn.Parameter(torch.ones(n_nonzero, dtype=self.dtype, device=self.device))
+            self.bias = nn.Parameter(torch.zeros(output_dim, dtype=self.dtype, device=self.device))
+        else:
+            # Register as a buffer so it’s not trainable; it will remain ones.
+            self.register_buffer('real_weights', torch.ones(n_nonzero, dtype=self.dtype, device=self.device))
+            self.register_buffer('bias', torch.zeros(output_dim, dtype=self.dtype, device=self.device))
         
-        # Optionally store the output dimension.
         self.output_dim = output_dim
 
     def forward(self, Y_full: torch.Tensor):
@@ -865,7 +870,7 @@ class NodesSitesMapping(nn.Module):
 
 
 class CumsumMapping(nn.Module):
-    def __init__(self, bionet_params: Dict[str, float], K: int = 8, init: int = None):
+    def __init__(self, bionet_params: Dict[str, float], K: int = 8):
         """
         Parameter
         ----------
@@ -887,14 +892,10 @@ class CumsumMapping(nn.Module):
         self.K = K
         
         # Initialize K raw parameters for increments.
-        if init is None:
-            # We set the first element to a very low value (e.g., -3) so that softplus gives a small number,
-            # and initialize the others to a constant so that softplus outputs ~1.
-            self.delta_raw = nn.Parameter(torch.empty(K))
-            nn.init.constant_(self.delta_raw, 0.541)  # so softplus(0.541) ≈ 1.0
-        else:
-            torch.manual_seed(init)
-            self.delta_raw = nn.Parameter(torch.rand(K))
+        # We set the first element to a very low value (e.g., -3) so that softplus gives a small number,
+        # and initialize the others to a constant so that softplus outputs ~1.
+        self.delta_raw = nn.Parameter(torch.empty(K))
+        nn.init.constant_(self.delta_raw, 0.541)  # so softplus(0.541) ≈ 1.0
             
         with torch.no_grad():
             self.delta_raw[0] = -3.0  # so softplus(-3.0) ≈ 0.05
@@ -1036,7 +1037,7 @@ class SignalingModel(torch.nn.Module):
         xssn_hidden_layers = module_params['xssn_hidden_layers']
         nsl_hidden_layers = module_params['nsl_hidden_layers']
         n_timepoints = module_params['n_timepoints']
-        time_init = module_params['time_init']
+        use_phospho = module_params['use_phospho']
         
         # filter for nodes in the network, sorting by node_labels order
         self.X_in = X_in
@@ -1070,8 +1071,9 @@ class SignalingModel(torch.nn.Module):
         self.nodes_sites_layer = NodesSitesMapping(nodes_sites_map = self.nodes_sites_map, 
                                                    hidden_layers = nsl_hidden_layers, 
                                                    dtype = self.dtype, 
-                                                   device = self.device)
-        self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints, init = time_init)
+                                                   device = self.device,
+                                                   use_phospho = use_phospho)
+        self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
         
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
                  weight_label: str = 'mode_of_action', source_label: str = 'source', target_label: str = 'target'):
