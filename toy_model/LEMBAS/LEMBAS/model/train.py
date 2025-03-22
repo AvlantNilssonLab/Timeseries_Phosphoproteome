@@ -25,7 +25,7 @@ HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL
 
 def split_data(X_in: torch.Tensor, 
                y_out: torch.Tensor, 
-               train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None}, 
+               train_split_frac: Dict = {'train': 0.8, 'test': 0.2}, 
                seed: int = 888,
                split_by: Literal['time', 'condition'] = 'time'):
     """Splits the data into train, test, and validation. It keeps specific time points for training and others for testing if split_by == 'time'. 
@@ -38,7 +38,7 @@ def split_data(X_in: torch.Tensor,
     y_out : torch.Tensor
         output TF activities. Index represents samples and columns represent TFs. Values represent activity of the TF.
     train_split_frac : Dict, optional
-        fraction of samples to be assigned to each of train, test and split, by default 0.8, 0.2, and 0 respectively
+        fraction of samples to be assigned to each of train and test, by default 0.8 and 0.2 respectively
     seed : int, optional
         seed value, by default 888
     """
@@ -46,45 +46,49 @@ def split_data(X_in: torch.Tensor,
     if not np.isclose(sum([v for v in train_split_frac.values() if v]), 1):
         raise ValueError('Train-test-validation split must sum to 1')
     
-    if not train_split_frac['validation'] or train_split_frac['validation'] == 0:
+    if split_by == 'time':
+        # Time split
+        y_out = y_out.reset_index()
+        y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1].astype(int)
+        y_out['Drug_CL'] = y_out['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
+        unique_time_points = y_out['Time'].unique()
         
-        if split_by == 'time':
-            # Time split
-            y_out = y_out.reset_index()
-            y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1].astype(int)
-            y_out['Drug_CL'] = y_out['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
-            unique_time_points = y_out['Time'].unique()
-            
-            # Ensure the first and last time points are always in the training set
-            first_time_point = unique_time_points.min()
-            last_time_point = unique_time_points.max()
-            remaining_time_points = np.setdiff1d(unique_time_points, [first_time_point, last_time_point])
-            
-            # Determine number of time points for splits and randomly sample them
-            n_train_time_points = int(round(len(unique_time_points) * train_split_frac['train'])) - 1
-            np.random.seed(seed)
-            train_time_points = np.random.choice(remaining_time_points, n_train_time_points, replace=False)
-            train_time_points = np.sort((np.concatenate(([first_time_point], train_time_points, [last_time_point]))))
-            test_time_points = np.sort(np.setdiff1d(unique_time_points, train_time_points))
-            print(f'Time points selected for training set: {train_time_points}')
-            
-            # Split the data based on the selected time points
-            y_train = y_out[y_out['Time'].isin(train_time_points)]
-            y_test = y_out[y_out['Time'].isin(test_time_points)]
-            y_train = y_train.sort_values(by=['Time', 'Drug_CL'])
-            y_test = y_test.sort_values(by=['Time', 'Drug_CL'])
-            
-            y_train = y_train.set_index('Drug_CL_Time').drop(columns=['Time', 'Drug_CL'])
-            y_test = y_test.set_index('Drug_CL_Time').drop(columns=['Time', 'Drug_CL'])
-            
-            # Split X_in based on the conditions in y_train and y_test
-            train_conditions = y_train.index.str.rsplit('_', n=1).str[0].unique()
-            test_conditions = y_test.index.str.rsplit('_', n=1).str[0].unique()
-            X_train = X_in.loc[train_conditions]
-            X_test = X_in.loc[test_conditions]
-            
-            return X_train, X_test, y_train, y_test, train_time_points.tolist(), test_time_points.tolist()
+        # Ensure the first and last time points are always in the training set
+        first_time_point = unique_time_points.min()
+        last_time_point = unique_time_points.max()
+        remaining_time_points = np.setdiff1d(unique_time_points, [first_time_point, last_time_point])
         
+        # Determine number of time points for splits and randomly sample them
+        n_train_time_points = int(round(len(unique_time_points) * train_split_frac['train'])) - 1
+        np.random.seed(seed)
+        train_time_points = np.random.choice(remaining_time_points, n_train_time_points, replace=False)
+        train_time_points = np.sort((np.concatenate(([first_time_point], train_time_points, [last_time_point]))))
+        test_time_points = np.sort(np.setdiff1d(unique_time_points, train_time_points))
+        print(f'Time points selected for training set: {train_time_points}')
+        
+        # Split the data based on the selected time points
+        y_train = y_out[y_out['Time'].isin(train_time_points)]
+        y_test = y_out[y_out['Time'].isin(test_time_points)]
+        y_train = y_train.sort_values(by=['Time', 'Drug_CL'])
+        y_test = y_test.sort_values(by=['Time', 'Drug_CL'])
+        
+        y_train = y_train.set_index('Drug_CL_Time').drop(columns=['Time', 'Drug_CL'])
+        y_test = y_test.set_index('Drug_CL_Time').drop(columns=['Time', 'Drug_CL'])
+        
+        # Split X_in based on the conditions in y_train and y_test
+        train_conditions = y_train.index.str.rsplit('_', n=1).str[0].unique()
+        test_conditions = y_test.index.str.rsplit('_', n=1).str[0].unique()
+        X_train = X_in.loc[train_conditions]
+        X_test = X_in.loc[test_conditions]
+        
+        return X_train, X_test, y_train, y_test, train_time_points.tolist(), test_time_points.tolist()
+        
+    else:
+        if train_split_frac['train'] == 1:
+            X_train = X_in
+            y_train = y_out
+            X_test = None
+            y_test = None
         else:
             # Condition split
             X_train, X_test = train_test_split(  # Split X conditions
@@ -94,7 +98,7 @@ def split_data(X_in: torch.Tensor,
             )
             train_conditions = X_train.index.astype(str)
             test_conditions = X_test.index.astype(str)
-
+            
             # Split the y_out to keep all time points for the respective conditions
             y_out = y_out.reset_index()
             y_out['Time'] = y_out['Drug_CL_Time'].str.split('_').str[-1].astype(int)
@@ -110,25 +114,15 @@ def split_data(X_in: torch.Tensor,
             # Map y index to X
             X_train = X_in.loc[y_train['Drug_CL'].unique()]
             X_test = X_in.loc[y_test['Drug_CL'].unique()]
-
+            
             y_train['Drug_CL_Time'] = y_train['Drug_CL'] + '_' + y_train['Time'].astype(str)
             y_train = y_train.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
             y_test['Drug_CL_Time'] = y_test['Drug_CL'] + '_' + y_test['Time'].astype(str)
             y_test = y_test.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
             
             return X_train, X_test, y_train, y_test
-        
-    else:
-        X_train, _X, y_train, _y = train_test_split(X_in, 
-                                                        y_out, 
-                                                        train_size=train_split_frac['train'],
-                                                        random_state=seed)
-        X_test, X_val, y_test, y_val = train_test_split(_X, 
-                                                    _y, 
-                                                    train_size=train_split_frac['test']/(train_split_frac['test'] + train_split_frac['validation']),
-                                                    random_state=seed)
-        
-    return X_train, X_test, X_val, y_train, y_test, y_val
+    
+    return X_train, X_test, y_train, y_test
 
 
 class ModelData(Dataset):
@@ -224,7 +218,7 @@ def train_signaling_model(mod,
                           loss_fn: torch.nn.modules.loss,
                           reset_epoch : int = 200,
                           hyper_params: Dict[str, Union[int, float]] = None,
-                          train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
+                          train_split_frac: Dict = {'train': 0.8, 'test': 0.2},
                           train_seed: int = None,
                           verbose: bool = True, 
                           break_nan: bool = True,
@@ -267,7 +261,7 @@ def train_signaling_model(mod,
             - 'power_steps_spectral' : 
             - 'subset_n_spectral' : 
     train_split_frac : Dict, optional
-        fraction of samples to be assigned to each of train, test and split, by default 0.8, 0.2, and 0 respectively
+        fraction of samples to be assigned to each of train and test, by default 0.8 and 0.2 respectively
     train_seed : int, optional
         seed value, by default mod.seed. By explicitly making this an argument, it allows different train-test splits even 
         with the same mod.seed, e.g., for cross-validation
@@ -350,26 +344,26 @@ def train_signaling_model(mod,
     
     # Store the indexes for batch matching
     X_train_index = X_train.index.tolist()
-    X_test_index = X_test.index.tolist()
+    X_test_index = X_test.index.tolist() if X_test is not None else None
     y_train_index = y_train.index.tolist()
     X_in = mod.df_to_tensor(X_in)
     y_out = mod.df_to_tensor(y_out)
     X_train = mod.df_to_tensor(X_train)
-    X_test = mod.df_to_tensor(X_test)
+    X_test = mod.df_to_tensor(X_test) if X_test is not None else None
     y_train = mod.df_to_tensor(y_train)
-    y_test = mod.df_to_tensor(y_test)
+    y_test = mod.df_to_tensor(y_test) if y_test is not None else None
     
     # Split X_cell if condition-based testing
     if split_by == 'condition':
         X_cell_train = X_cell.loc[X_train_index]
-        X_cell_test = X_cell.loc[X_test_index]
+        X_cell_test = X_cell.loc[X_test_index] if X_test is not None else None
         X_cell_train = mod.df_to_tensor(X_cell_train)
-        X_cell_test = mod.df_to_tensor(X_cell_test)
+        X_cell_test = mod.df_to_tensor(X_cell_test) if X_cell_test is not None else None
     else:
         X_cell_train = mod.df_to_tensor(X_cell)
         X_cell_test = mod.df_to_tensor(X_cell)
     
-    mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean TF (across samples) loss
+    mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean (across samples) loss
     
     # Create NaN mask for y_train
     mask = ~torch.isnan(y_train)
