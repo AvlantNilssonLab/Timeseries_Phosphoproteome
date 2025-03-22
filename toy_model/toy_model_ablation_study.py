@@ -3,6 +3,7 @@ import pickle
 
 import numpy as np
 import pandas as pd
+import torch.nn as nn
 
 from scipy.stats import pearsonr
 import torch
@@ -135,7 +136,12 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         
         # Evaluation on training data
         Y_hat_train, Y_full_train, Y_fullFull_train = model_trained(X_train, X_cell_train, missing_node_indexes)
-        Y_sub_train = subsample_Y(Y_fullFull_train, floor_idx, ceil_idx, weight)
+        if hyper_params['use_time']:
+            Y_sub_train = subsample_Y(Y_fullFull_train, floor_idx, ceil_idx, weight)
+        else:
+            unique_time_points = np.linspace(0, 149, 8).astype(int)
+            Y_sub_train = Y_fullFull_train[:, unique_time_points, :]
+        
         Y_sub_train = Y_sub_train - Y_sub_train[:, 0:1, :]
         Y_sub_train = Y_sub_train.permute(1, 0, 2)
         Y_sub_train = torch.flatten(Y_sub_train, start_dim=0, end_dim=1)
@@ -160,7 +166,11 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         X_test = mod.df_to_tensor(X_test)
         X_cell_test = mod.df_to_tensor(X_cell_test)
         Y_hat_test, Y_full_test, Y_fullFull_test = model_trained(X_test, X_cell_test, missing_node_indexes)
-        Y_sub_test = subsample_Y(Y_fullFull_test, floor_idx, ceil_idx, weight)
+        if hyper_params['use_time']:
+            Y_sub_test = subsample_Y(Y_fullFull_test, floor_idx, ceil_idx, weight)
+        else:
+            Y_sub_test = Y_fullFull_test[:, unique_time_points, :]
+        
         Y_sub_test = Y_sub_test - Y_sub_test[:, 0:1, :]
         Y_sub_test = Y_sub_test.permute(1, 0, 2)
         Y_sub_test = torch.flatten(Y_sub_test, start_dim=0, end_dim=1)
@@ -232,46 +242,83 @@ projection_amplitude_out = 1.2
 bionet_params = {'target_steps': 100, 'max_steps': 150, 'exp_factor':50, 'tolerance': 1e-5, 'leak':1e-2} # fed directly to model
 
 # training parameters
-lr_params = {'max_iter': 100, 
+lr_params = {'max_iter': 5000, 
              'learning_rate': 2e-3}
 other_params = {'batch_size': 10, 'noise_level': 10, 'gradient_noise_level': 1e-9}
 regularization_params = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
                    'uniform_max': 1/projection_amplitude_out, 'spectral_loss_factor': 1e-5}
 spectral_radius_params = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
 target_spectral_radius = 0.8
-hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params}  # fed into training function | ** are used to combine multiple dictionaries -> it unpacks them
-
 module_params = {
     'use_cln': True,
     'cln_hidden_layers': {1: 64, 2: 16},  # {1: 64, 2: 32}
     'use_xssn': True,
     'xssn_hidden_layers': {1: 64, 2: 16},
     'nsl_hidden_layers': None,
+    'use_time': False,
     'n_timepoints': 8,
-    'time_init': None
+    'use_phospho': False
 }
 
+# Ablation study configurations
+ablation_configs = [
+    {'name': 'initial',  'use_time': False, 'use_phospho': False, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    {'name': 'with_time',  'use_time': True, 'use_phospho': False, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    {'name': 'with_time_with_phospho',  'use_time': True, 'use_phospho': True, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    {'name': 'with_time_with_phospho_with_bcell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    {'name': 'with_all',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    {'name': 'with_all_hiddenlayers_in_cell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}}
+]
 
-mod = SignalingModel(net = net,
-                     X_in = x_data,
-                     y_out = y_data, 
-                     X_cell = x_cell,
-                     X_drug = x_drug,
-                     nodes_sites_map = nodes_sites_map,
-                     projection_amplitude_in = projection_amplitude_in, projection_amplitude_out = projection_amplitude_out,
-                     weight_label = weight_label, source_label = source_label, target_label = target_label,
-                     bionet_params = bionet_params, 
-                     dtype = torch.float32, device = device, seed = seed, module_params = module_params)
+for config in ablation_configs:
+    print(f"Running configuration: {config['name']}")
+    
+    # Update module parameters for this ablation
+    module_params['use_phospho'] = config['use_phospho']
+    module_params['use_time'] = config['use_time']
+    module_params['use_cln'] = config['use_cln']
+    module_params['use_xssn'] = config['use_xssn']
+    module_params['cln_hidden_layers'] = config['cln_hidden_layers']
+    module_params['xssn_hidden_layers'] = config['xssn_hidden_layers']
+    
+    hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params, **module_params}
+
+    mod = SignalingModel(net = net,
+                        X_in = x_data,
+                        y_out = y_data, 
+                        X_cell = x_cell,
+                        X_drug = x_drug,
+                        nodes_sites_map = nodes_sites_map,
+                        projection_amplitude_in = projection_amplitude_in, projection_amplitude_out = projection_amplitude_out,
+                        weight_label = weight_label, source_label = source_label, target_label = target_label,
+                        bionet_params = bionet_params, 
+                        dtype = torch.float32, device = device, seed = seed, module_params = module_params)
 
 
-# Train model with 5-fold cross-validation
-cv_results = train_cv(mod, net, hyper_params, n_cv=5)
-print("Saving results...")
-data_path = os.path.join(current_dir, "results/ablation_study_res", "cv_results.pkl")
-with open(data_path, "wb") as f:
-    pickle.dump(cv_results, f)
+    # Deactivate time layer if not used
+    if not hyper_params.get('use_time', True):
+        class NoOpModule(nn.Module):
+            def __init__(self):
+                super().__init__()
+            def forward(self, *args, **kwargs):
+                return None
+            def parameters(self):
+                return []
+        mod.time_layer = NoOpModule()
 
-# Load results
+
+    # Train model with 5-fold cross-validation
+    cv_results = train_cv(mod, net, hyper_params, n_cv=5)
+    
+    print("Saving results...")
+    config_results_path = os.path.join(current_dir, "results", "ablation_study_res", f"cv_results_{config['name']}.pkl")
+    data_path = os.path.join(config_results_path)
+    with open(data_path, "wb") as f:
+        pickle.dump(cv_results, f)
+
+'''# Load results
+config_results_path = os.path.join(current_dir, "results", "ablation_study_res", "cv_results_with_time_with_phospho_with_bcell.pkl")
+data_path = os.path.join(config_results_path)
 with open(data_path, "rb") as f:
     cv_results_load = pickle.load(f)
 
@@ -338,4 +385,4 @@ p3 = (
     p9.theme(figure_size=(width, height)) +
     p9.geom_text(data=pearson_df_test, mapping=p9.aes(x='x', y='y', label='label'), size=10)
 )
-p3.show()
+p3.show()'''
