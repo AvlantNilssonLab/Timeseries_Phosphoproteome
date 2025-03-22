@@ -4,6 +4,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import torch.nn as nn
+import time
 
 from scipy.stats import pearsonr
 import torch
@@ -118,6 +119,7 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         mod_fold.y_out = y_train_proc
         
         # Train model
+        start_time = time.time()
         model_trained, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_train_index, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_node_indexes, floor_idx, ceil_idx, weight = train_signaling_model(
             mod_fold, net, optimizer, loss_fn, 
             reset_epoch=200,
@@ -127,6 +129,7 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
             split_by='condition', 
             noise_scale=0
         )
+        training_time = time.time() - start_time
         
         # Store training loss
         loss_smooth = utils.get_moving_average(values=stats['loss_mean'], n_steps=5)
@@ -192,7 +195,7 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         # Save fold results
         cv_results.append({
             "fold": fold+1,
-            "train": {"data": train_df, "pearson": pr_train, "loss": loss_df},
+            "train": {"data": train_df, "pearson": pr_train, "loss": loss_df, "training_time": training_time},
             "test": {"data": test_df, "pearson": pr_test}
         })
         
@@ -242,7 +245,7 @@ projection_amplitude_out = 1.2
 bionet_params = {'target_steps': 100, 'max_steps': 150, 'exp_factor':50, 'tolerance': 1e-5, 'leak':1e-2} # fed directly to model
 
 # training parameters
-lr_params = {'max_iter': 5000, 
+lr_params = {'max_iter': 3000, 
              'learning_rate': 2e-3}
 other_params = {'batch_size': 10, 'noise_level': 10, 'gradient_noise_level': 1e-9}
 regularization_params = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
@@ -267,7 +270,8 @@ ablation_configs = [
     {'name': 'with_time_with_phospho',  'use_time': True, 'use_phospho': True, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
     {'name': 'with_time_with_phospho_with_bcell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
     {'name': 'with_all',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
-    {'name': 'with_all_hiddenlayers_in_cell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}}
+    {'name': 'with_all_hiddenlayers_in_cell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}},
+    {'name': 'random',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}, 'shuffle': True}
 ]
 
 for config in ablation_configs:
@@ -283,6 +287,10 @@ for config in ablation_configs:
     
     hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params, **module_params}
 
+    # Shuffle data if specified
+    if config['name'] == 'random':
+        y_data = y_data.sample(frac=1, random_state=seed)
+    
     mod = SignalingModel(net = net,
                         X_in = x_data,
                         y_out = y_data, 
