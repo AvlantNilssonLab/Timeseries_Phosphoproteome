@@ -87,7 +87,7 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
 
     # Prepare 5xFolds
     indices = np.array(mod.X_in.index)
-    kf = KFold(n_splits=n_cv, shuffle=True, random_state=888)
+    kf = KFold(n_splits=n_cv, shuffle=True, random_state=49)
 
     for fold, (train_idx, test_idx) in enumerate(kf.split(indices)):
         print(f"Processing fold {fold+1}...")
@@ -104,7 +104,6 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         mod_fold.X_in = mod.X_in.loc[indices[train_idx]]
         mod_fold.X_cell = mod.X_cell.loc[indices[train_idx]]
         
-        #mod_fold.y_out = mod.y_out.loc[indices[train_idx]]
         y_out_proc = mod.y_out.reset_index()
         y_out_proc['Time'] = y_out_proc['Drug_CL_Time'].str.split('_').str[-1].astype(int)
         y_out_proc['Drug_CL'] = y_out_proc['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
@@ -112,20 +111,41 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         y_test_proc = y_out_proc[y_out_proc['Drug_CL'].isin(indices[test_idx])]
         y_train_proc = y_train_proc.drop(columns=['Drug_CL_Time']).sort_values(by=['Time', 'Drug_CL'])
         y_test_proc = y_test_proc.drop(columns=['Drug_CL_Time']).sort_values(by=['Time', 'Drug_CL'])
+        
+        mod_fold.X_in = mod_fold.X_in.loc[y_train_proc['Drug_CL'].unique()]
+        X_test =  mod.X_in.loc[indices[test_idx]]
+        X_test = X_test.loc[y_test_proc['Drug_CL'].unique()]
+        X_cell_test = mod.X_cell.loc[indices[test_idx]]
+        X_cell_test = X_cell_test.loc[y_test_proc['Drug_CL'].unique()]
+        
         y_train_proc['Drug_CL_Time'] = y_train_proc['Drug_CL'] + '_' + y_train_proc['Time'].astype(str)
         y_train_proc = y_train_proc.set_index('Drug_CL_Time').drop(columns=['Drug_CL','Time'])
         y_test_proc['Drug_CL_Time'] = y_test_proc['Drug_CL'] + '_' + y_test_proc['Time'].astype(str)
         y_test_proc = y_test_proc.set_index('Drug_CL_Time').drop(columns=['Drug_CL','Time'])
+        
+        # Shuffle data if specified
+        if hyper_params['shuffle'] == True:
+            orig_index = y_train_proc.index.copy()
+            orig_columns = y_train_proc.columns.copy()
+
+            # Shuffle the rows and cols
+            row_order = np.random.permutation(y_train_proc.shape[0])
+            shuffled_rows = y_train_proc.values[row_order, :]
+            y_train_proc = pd.DataFrame(shuffled_rows, index=orig_index, columns=orig_columns)
+            col_order = np.random.permutation(y_train_proc.shape[1])
+            shuffled_cols = y_train_proc.values[:, col_order]
+            y_train_proc = pd.DataFrame(shuffled_cols, index=y_train_proc.index, columns=orig_columns)
+        
         mod_fold.y_out = y_train_proc
         
         # Train model
         start_time = time.time()
-        model_trained, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_train_index, y_train, y_test, y_train_index, X_cell_train, X_cell_test, missing_node_indexes, floor_idx, ceil_idx, weight = train_signaling_model(
+        model_trained, cur_loss, cur_eig, mean_loss, stats, X_train, X_test_, X_train_index, y_train, y_test_, y_train_index, X_cell_train, X_cell_test_, missing_node_indexes, floor_idx, ceil_idx, weight = train_signaling_model(
             mod_fold, net, optimizer, loss_fn, 
             reset_epoch=200,
             hyper_params=hyper_params,
             train_split_frac={'train': 1.0, 'test': 0.0},
-            train_seed=888,
+            train_seed=49,
             split_by='condition', 
             noise_scale=0
         )
@@ -164,8 +184,6 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         train_df = pd.DataFrame({'True': y_actual_train_filtered, 'Predicted': y_pred_train_filtered})
         
         # Evaluation on Test Data
-        X_test = mod.X_in.loc[indices[test_idx]]
-        X_cell_test = mod.X_cell.loc[indices[test_idx]]
         X_test = mod.df_to_tensor(X_test)
         X_cell_test = mod.df_to_tensor(X_cell_test)
         Y_hat_test, Y_full_test, Y_fullFull_test = model_trained(X_test, X_cell_test, missing_node_indexes)
@@ -254,13 +272,13 @@ spectral_radius_params = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 's
 target_spectral_radius = 0.8
 module_params = {
     'use_cln': True,
-    'cln_hidden_layers': {1: 64, 2: 16},  # {1: 64, 2: 32}
+    'cln_hidden_layers': None,  # {1: 64, 2: 32}
     'use_xssn': True,
-    'xssn_hidden_layers': {1: 64, 2: 16},
+    'xssn_hidden_layers': None,
     'nsl_hidden_layers': None,
-    'use_time': False,
+    'use_time': True,
     'n_timepoints': 8,
-    'use_phospho': False
+    'use_phospho': True
 }
 
 # Ablation study configurations
@@ -271,7 +289,7 @@ ablation_configs = [
     {'name': 'with_time_with_phospho_with_bcell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
     {'name': 'with_all',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
     {'name': 'with_all_hiddenlayers_in_cell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}},
-    {'name': 'random',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}, 'shuffle': True}
+    {'name': 'random',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}}
 ]
 
 for config in ablation_configs:
@@ -285,11 +303,10 @@ for config in ablation_configs:
     module_params['cln_hidden_layers'] = config['cln_hidden_layers']
     module_params['xssn_hidden_layers'] = config['xssn_hidden_layers']
     
-    hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params, **module_params}
-
-    # Shuffle data if specified
     if config['name'] == 'random':
-        y_data = y_data.sample(frac=1, random_state=seed)
+        hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params, **module_params, 'shuffle': True}
+    else:
+        hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params, **module_params, 'shuffle': False}
     
     mod = SignalingModel(net = net,
                         X_in = x_data,
@@ -324,7 +341,7 @@ for config in ablation_configs:
     with open(data_path, "wb") as f:
         pickle.dump(cv_results, f)
 
-'''# Load results
+# Load results
 config_results_path = os.path.join(current_dir, "results", "ablation_study_res", "cv_results_with_time_with_phospho_with_bcell.pkl")
 data_path = os.path.join(config_results_path)
 with open(data_path, "rb") as f:
@@ -393,4 +410,4 @@ p3 = (
     p9.theme(figure_size=(width, height)) +
     p9.geom_text(data=pearson_df_test, mapping=p9.aes(x='x', y='y', label='label'), size=10)
 )
-p3.show()'''
+p3.show()
