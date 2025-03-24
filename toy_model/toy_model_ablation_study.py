@@ -160,13 +160,13 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         # Evaluation on training data
         Y_hat_train, Y_full_train, Y_fullFull_train = model_trained(X_train, X_cell_train, missing_node_indexes)
         if hyper_params['use_time']:
-            Y_sub_train = subsample_Y(Y_fullFull_train, floor_idx, ceil_idx, weight)
+            Y_sub_train_ = subsample_Y(Y_fullFull_train, floor_idx, ceil_idx, weight)
         else:
             unique_time_points = np.linspace(0, 149, 8).astype(int)
-            Y_sub_train = Y_fullFull_train[:, unique_time_points, :]
+            Y_sub_train_ = Y_fullFull_train[:, unique_time_points, :]
         
-        Y_sub_train = Y_sub_train - Y_sub_train[:, 0:1, :]
-        Y_sub_train = Y_sub_train.permute(1, 0, 2)
+        Y_sub_train_ = Y_sub_train_.permute(1, 0, 2)
+        Y_sub_train = Y_sub_train_ - Y_sub_train_[0:1, :, :]
         Y_sub_train = torch.flatten(Y_sub_train, start_dim=0, end_dim=1)
         
         y_actual_train = y_train.reshape(8, len(X_train_index), mod.y_out.shape[1])
@@ -181,19 +181,30 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         
         pr_train, _ = pearsonr(y_pred_train_filtered, y_actual_train_filtered)
         
-        train_df = pd.DataFrame({'True': y_actual_train_filtered, 'Predicted': y_pred_train_filtered})
+        # Prepare train datasets to export
+        true_train_long = (y_train_proc
+                           .reset_index()
+                           .melt(id_vars="Drug_CL_Time", var_name="Site", value_name="True"))
+        true_train_long["Drug_CL_Time_Site"] = (true_train_long["Drug_CL_Time"].astype(str) + "_" +
+                                                true_train_long["Site"].astype(str))
+        true_train_long = true_train_long.set_index("Drug_CL_Time_Site")
+        
+        Y_sub_train_ = torch.flatten(Y_sub_train_, start_dim=0, end_dim=1)
+        pred_train_array = Y_sub_train_.detach().cpu().numpy().flatten(order='F')
+        pred_train_series = pd.Series(pred_train_array, index=true_train_long.index, name="Predicted")
+        train_df = true_train_long.join(pred_train_series, how="inner")
         
         # Evaluation on Test Data
         X_test = mod.df_to_tensor(X_test)
         X_cell_test = mod.df_to_tensor(X_cell_test)
         Y_hat_test, Y_full_test, Y_fullFull_test = model_trained(X_test, X_cell_test, missing_node_indexes)
         if hyper_params['use_time']:
-            Y_sub_test = subsample_Y(Y_fullFull_test, floor_idx, ceil_idx, weight)
+            Y_sub_test_ = subsample_Y(Y_fullFull_test, floor_idx, ceil_idx, weight)
         else:
-            Y_sub_test = Y_fullFull_test[:, unique_time_points, :]
+            Y_sub_test_ = Y_fullFull_test[:, unique_time_points, :]
         
-        Y_sub_test = Y_sub_test - Y_sub_test[:, 0:1, :]
-        Y_sub_test = Y_sub_test.permute(1, 0, 2)
+        Y_sub_test_ = Y_sub_test_.permute(1, 0, 2)
+        Y_sub_test = Y_sub_test_ - Y_sub_test_[0:1, :, :]
         Y_sub_test = torch.flatten(Y_sub_test, start_dim=0, end_dim=1)
         
         y_test = mod.df_to_tensor(y_test_proc)
@@ -208,7 +219,19 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         y_actual_test_filtered = y_actual_test_np[mask_test]
         
         pr_test, _ = pearsonr(y_pred_test_filtered, y_actual_test_filtered)
-        test_df = pd.DataFrame({'True': y_actual_test_filtered, 'Predicted': y_pred_test_filtered})
+        
+        # Prepare test datasets to export
+        true_test_long = (y_test_proc
+                           .reset_index()
+                           .melt(id_vars="Drug_CL_Time", var_name="Site", value_name="True"))
+        true_test_long["Drug_CL_Time_Site"] = (true_test_long["Drug_CL_Time"].astype(str) + "_" +
+                                                true_test_long["Site"].astype(str))
+        true_test_long = true_test_long.set_index("Drug_CL_Time_Site")
+        
+        Y_sub_test_ = torch.flatten(Y_sub_test_, start_dim=0, end_dim=1)
+        pred_test_array = Y_sub_test_.detach().cpu().numpy().flatten(order='F')
+        pred_test_series = pd.Series(pred_test_array, index=true_test_long.index, name="Predicted")
+        test_df = true_test_long.join(pred_test_series, how="inner")
         
         # Save fold results
         cv_results.append({
@@ -278,7 +301,9 @@ module_params = {
     'nsl_hidden_layers': None,
     'use_time': True,
     'n_timepoints': 8,
-    'use_phospho': True
+    'use_phospho': True,
+    'conn_dim': None,
+    'shuffle': False
 }
 
 # Ablation study configurations
@@ -289,7 +314,8 @@ ablation_configs = [
     {'name': 'with_time_with_phospho_with_bcell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
     {'name': 'with_all',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
     {'name': 'with_all_hiddenlayers_in_cell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}},
-    {'name': 'random',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}}
+    #{'name': 'with_all_hiddenlayers_in_cell_embedding',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}, 'conn_dim': 5, 'nsl_hidden_layers': {1: 64}},
+    {'name': 'random',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}, 'shuffle': True}
 ]
 
 for config in ablation_configs:
@@ -303,10 +329,15 @@ for config in ablation_configs:
     module_params['cln_hidden_layers'] = config['cln_hidden_layers']
     module_params['xssn_hidden_layers'] = config['xssn_hidden_layers']
     
-    if config['name'] == 'random':
-        hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params, **module_params, 'shuffle': True}
-    else:
-        hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params, **module_params, 'shuffle': False}
+    if 'conn_dim' in config:
+        module_params['conn_dim'] = config['conn_dim']
+        module_params['nsl_hidden_layers'] = config['nsl_hidden_layers']
+    
+    if 'shuffle' in config:
+        module_params['shuffle'] = config['shuffle']
+    
+    hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params, **module_params}
+    
     
     mod = SignalingModel(net = net,
                         X_in = x_data,
@@ -341,8 +372,8 @@ for config in ablation_configs:
     with open(data_path, "wb") as f:
         pickle.dump(cv_results, f)
 
-# Load results
-config_results_path = os.path.join(current_dir, "results", "ablation_study_res", "cv_results_with_time_with_phospho_with_bcell.pkl")
+'''# Load results
+config_results_path = os.path.join(current_dir, "results", "ablation_study_res", "cv_results_with_all_hiddenlayers_in_cell.pkl")
 data_path = os.path.join(config_results_path)
 with open(data_path, "rb") as f:
     cv_results_load = pickle.load(f)
@@ -410,4 +441,4 @@ p3 = (
     p9.theme(figure_size=(width, height)) +
     p9.geom_text(data=pearson_df_test, mapping=p9.aes(x='x', y='y', label='label'), size=10)
 )
-p3.show()
+p3.show()'''
