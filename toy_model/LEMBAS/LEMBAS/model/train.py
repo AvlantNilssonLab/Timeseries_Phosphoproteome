@@ -390,9 +390,18 @@ def train_signaling_model(mod,
     # begin iteration 
     mod.signaling_network.force_sparcity()
     for e in range(hyper_params['max_iter']):
-        # set learning rate
-        cur_lr = utils.get_lr(e, hyper_params['max_iter'], max_height = hyper_params['learning_rate'],
-                              start_height=hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
+        # set learning rate either as a variable or constant
+        if hyper_params.get("variable_lr", True):
+            cur_lr = utils.get_lr(
+                e,
+                hyper_params['max_iter'],
+                max_height=hyper_params['learning_rate'],
+                start_height=hyper_params['learning_rate'] / 10,
+                end_height=1e-6,
+                peak=1000
+            )
+        else:
+            cur_lr = hyper_params['learning_rate']
         optimizer.param_groups[0]['lr'] = cur_lr
         for param_group in optimizer.param_groups:
             if param_group['lr'] == time_layer_lr:
