@@ -708,8 +708,6 @@ class NodesSitesMapping(nn.Module):
         nodes_sites_map : pd.DataFrame
             DataFrame with sites as rows and signaling nodes as columns.
             It must be one-hot (or sparse instead of dense) where 1 indicates a connection.
-        hidden_layers : Dict[int, int], optional
-            Dictionary specifying any hidden layers before the final mapping.
         dtype : torch.dtype, optional
             Data type for tensors.
         device : str, optional
@@ -721,7 +719,7 @@ class NodesSitesMapping(nn.Module):
         self.device = device
         self.dtype = dtype
 
-        # Convert mapping to a tensor and create the boolean mask.
+        # Convert mapping to a tensor and create the boolean mask
         mapping_tensor = torch.tensor(nodes_sites_map.values, dtype=self.dtype, device=self.device)
         self.mask = mapping_tensor != 0  # True where connection exists; shape: (n_sites, n_nodes)
         
@@ -731,16 +729,16 @@ class NodesSitesMapping(nn.Module):
         layers = []
         prev_dim = input_dim
         
-        # Add hidden layers if specified.
+        # Add hidden layers if specified - Not used
         if hidden_layers:
             for i in range(1, len(hidden_layers) + 1):
                 layers.append(nn.Linear(prev_dim, hidden_layers[i]).to(device, dtype))
                 layers.append(nn.ReLU())
                 prev_dim = hidden_layers[i]
         
-        # Learnable parameter vector for the allowed weights (nonzero in the mask) and a bias parameter for each output.
+        # Learnable parameter vector for the allowed weights (nonzero in the mask) and a bias parameter for each output
         n_nonzero = int(self.mask.sum().item())
-        # Save the indices (row, col) where the mapping is 1.
+        # Save the indices (row, col) where the mapping is 1
         self.indices = self.mask.nonzero(as_tuple=False)  # shape: (n_nonzero, 2)
         
         # Create a learnable vector for allowed connections
@@ -748,7 +746,7 @@ class NodesSitesMapping(nn.Module):
             self.real_weights = nn.Parameter(torch.ones(n_nonzero, dtype=self.dtype, device=self.device))
             self.bias = nn.Parameter(torch.zeros(output_dim, dtype=self.dtype, device=self.device))
         else:
-            # Register as a buffer so it’s not trainable; it will remain ones.
+            # Register as a buffer so it’s not trainable; it will remain ones
             self.register_buffer('real_weights', torch.ones(n_nonzero, dtype=self.dtype, device=self.device))
             self.register_buffer('bias', torch.zeros(output_dim, dtype=self.dtype, device=self.device))
         
@@ -771,9 +769,9 @@ class NodesSitesMapping(nn.Module):
         samples, time_points, nodes = Y_full.shape
         Y_full_reshaped = Y_full.view(samples * time_points, nodes)
         
-        # Create a full weight matrix of shape (output_dim, n_nodes) filled with zeros.
+        # Create a full weight matrix of shape (output_dim, n_nodes) filled with zeros
         full_weight = torch.zeros((self.output_dim, nodes), dtype=self.dtype, device=self.device)
-        # Fill the allowed entries with the learnable weights.
+        # Fill the allowed entries with the learnable weights
         full_weight[self.indices[:, 0], self.indices[:, 1]] = self.real_weights
         self.full_weight = full_weight
         Y_mapped_reshaped = torch.nn.functional.linear(Y_full_reshaped, full_weight, self.bias)
@@ -799,74 +797,83 @@ class NodesSitesMapping(nn.Module):
         return weight_loss + bias_loss
 
 
-'''class NodesSitesMapping(nn.Module):
-    """Layer to map signaling nodes to phosphosites with sparse connectivity.
-       This version uses an embedding for each signaling node.
-       The one-hot connectivity (phosphosites x nodes) is stored in self.mapping_tensor.
-       For each node, we learn an embedding vector (of dimension emb_dim),
-       then compute a scalar factor by dotting with self.final_weight.
-       Finally, we use the weighted mapping to get the phosphosite output.
+class NodesSitesMapping_embedding(nn.Module):
     """
-    def __init__(self, nodes_sites_map: pd.DataFrame, emb_dim: int = 10, hidden_layers: Dict[int, int] = None,
-                 dtype: torch.dtype = torch.float32, device: str = 'cpu'):
+    Revised mapping layer that converts signaling node outputs to phosphosite outputs.
+    Here, a learnable node embedding (of shape (n_nodes, conn_dim)) is applied to the node outputs.
+    The one-hot mapping (of shape (n_sites, n_nodes)) enforces allowed connections,
+    combining node features (via a matrix multiply) into site features of shape (B, n_sites, conn_dim).
+    Finally, an MLP (applied per site) nonlinearly maps the con‑dim features to a scalar output.
+    """
+    def __init__(self, nodes_sites_map: pd.DataFrame, conn_dim: int = 10,
+                 hidden_layers: Dict[int, int] = None,
+                 dtype: torch.dtype = torch.float32, device: str = 'cpu', use_phospho: bool = True):
         super().__init__()
         self.device = device
         self.dtype = dtype
+        self.conn_dim = conn_dim
 
+        n_sites = nodes_sites_map.shape[0]  # number of phosphosites
+        n_nodes = nodes_sites_map.shape[1]  # number of signaling nodes
+        self.output_dim = n_sites
+        self.n_nodes = n_nodes
+
+        # Create node embedding (nodes x conn_dim)
+        self.node_embedding = nn.Parameter(torch.ones(n_nodes, conn_dim, dtype=self.dtype, device=self.device))
+        torch.nn.init.orthogonal_(self.node_embedding)  # Initialize with orthogonal matrix
+
+        # One-hot mapping (sites x nodes) to enforce allowed connections
         mapping_tensor = torch.tensor(nodes_sites_map.values, dtype=self.dtype, device=self.device)
         self.mapping_tensor = mapping_tensor  # shape: (n_sites, n_nodes)
-        self.mask = mapping_tensor != 0  # Boolean mask to enforce connections
 
-        input_dim = nodes_sites_map.shape[1]   # Number of signaling nodes
-        self.output_dim = nodes_sites_map.shape[0]  # Number of phosphosites
-
-        self.embedding = nn.Parameter(torch.ones(input_dim, emb_dim, dtype=self.dtype, device=self.device))
-        self.final_weight = nn.Parameter(torch.ones(emb_dim, dtype=self.dtype, device=self.device))
-        
-        # Add hidden layers if needed
+        # Construct an MLP that maps from conn_dim to 1
+        input_size = conn_dim
+        layers = []
         if hidden_layers:
-            # Build a deeper network that further transforms the embedding
-            layers = []
-            prev_dim = emb_dim
-            for i in range(1, len(hidden_layers) + 1):
-                layers.append(nn.Linear(prev_dim, hidden_layers[i]).to(device, dtype))
+            for key in sorted(hidden_layers.keys()):
+                layers.append(nn.Linear(input_size, hidden_layers[key], bias=True))
                 layers.append(nn.ReLU())
-                prev_dim = hidden_layers[i]
-            self.embedding_mlp = nn.Sequential(*layers)
-        else:
-            self.embedding_mlp = None
-    
+                input_size = hidden_layers[key]
+        # Final layer that outputs a single scalar per site
+        layers.append(nn.Linear(input_size, 1, bias=False))
+        self.non_linear = nn.Sequential(*layers).to(device, dtype)
+        
     def forward(self, Y_full: torch.Tensor):
         """
         Parameters:
-          Y_full : torch.Tensor
-              Signaling network output tensor, shape (samples, time_points, n_nodes)
+          Y_full : torch.Tensor of shape (samples, time_points, n_nodes)
         Returns:
-          Y_mapped : torch.Tensor
-              Mapped phosphosite outputs, shape (samples, time_points, n_sites)
+          Y_mapped : torch.Tensor of shape (samples, time_points, n_sites)
         """
-        samples, time_points, nodes = Y_full.shape
-        Y_flat = Y_full.view(samples * time_points, nodes)  # shape (samples*time, n_nodes)
+        samples, time_points, n_nodes = Y_full.shape
+        B = samples * time_points
         
-        if self.embedding_mlp is not None:
-            node_emb = self.embedding_mlp(self.embedding)  # shape: (n_nodes, emb_dim')
-        else:
-            node_emb = self.embedding  # shape: (n_nodes, emb_dim)
+        Y_flat = Y_full.view(B, n_nodes)  # (B, n_nodes)
+
+        # Multiply node outputs with node embedding
+        # For each node i: node feature = Y_flat[:, i] * node_embedding[i]
+        node_features = Y_flat.unsqueeze(-1) * self.node_embedding  # (B, n_nodes, conn_dim)
+
+        # Enforce allowed connections
+        site_features = torch.matmul(self.mapping_tensor.float(), node_features)
+
+        # Reshape to combine batch and site dimensions: (B * n_sites, conn_dim)
+        mlp_input = site_features.view(B * self.output_dim, self.conn_dim)
+        mlp_output = self.non_linear(mlp_input)  # shape: (B * n_sites, 1)
         
-        node_factors = torch.matmul(node_emb, self.final_weight)  # shape (n_nodes,)
-        
-        # Enforce connections
-        full_mapping = self.mapping_tensor.float() * node_factors  # shape: (n_sites, n_nodes)
-        
-        Y_mapped_flat = torch.matmul(Y_flat, full_mapping.T)  # shape: (samples*time, n_sites)
-        Y_mapped = Y_mapped_flat.view(samples, time_points, self.output_dim)
+        # Reshape back to (B, n_sites)
+        out = mlp_output.view(B, self.output_dim)
+        Y_mapped = out.view(samples, time_points, self.output_dim)
         return Y_mapped
-    
+
     def L2_reg(self, lambda_L2: float = 0):
-        """Regularization: L2 penalization on the embedding and final weight."""
-        reg = lambda_L2 * (torch.sum(self.embedding**2) + torch.sum(self.final_weight**2))
-        # Optionally include additional regularization on bias if you add a bias later.
-        return reg'''
+        """
+        L2 regularization on the node embeddings and all parameters of the non-linear MLP.
+        """
+        emb_reg = torch.sum(self.node_embedding ** 2)
+        mlp_reg = sum(torch.sum(param ** 2) for param in self.non_linear.parameters())
+        reg = lambda_L2 * (emb_reg + mlp_reg)
+        return reg
 
 
 class CumsumMapping(nn.Module):
@@ -1038,6 +1045,7 @@ class SignalingModel(torch.nn.Module):
         nsl_hidden_layers = module_params['nsl_hidden_layers']
         n_timepoints = module_params['n_timepoints']
         use_phospho = module_params['use_phospho']
+        conn_dim = module_params['conn_dim']
         
         # filter for nodes in the network, sorting by node_labels order
         self.X_in = X_in
@@ -1056,6 +1064,7 @@ class SignalingModel(torch.nn.Module):
                                         projection_amplitude = projection_amplitude_in, 
                                         dtype = self.dtype, 
                                         device = self.device)
+        
         self.signaling_network = BioNet(edge_list = edge_list, 
                                         edge_MOA = edge_MOA, 
                                         n_network_nodes = len(node_labels), 
@@ -1064,15 +1073,26 @@ class SignalingModel(torch.nn.Module):
                                         dtype = self.dtype, device = self.device, seed = self.seed,
                                         cell_line_network = CellLineNetwork(input_dim=X_cell.shape[1], hidden_layers=cln_hidden_layers, output_dim=len(node_labels), dtype=self.dtype, device=self.device) if use_cln else None,
                                         xss_cell_line_network = XssCellLineNetwork(input_dim=X_cell.shape[1], hidden_layers=xssn_hidden_layers, output_dim=len(node_labels), dtype=self.dtype, device=self.device) if use_xssn else None)
+        
         self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
                                           output_labels = self.nodes_sites_map.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 
                                           dtype = self.dtype, device = device)
-        self.nodes_sites_layer = NodesSitesMapping(nodes_sites_map = self.nodes_sites_map, 
-                                                   hidden_layers = nsl_hidden_layers, 
+        
+        if conn_dim is not None:
+            self.nodes_sites_layer = NodesSitesMapping_embedding(nodes_sites_map = self.nodes_sites_map,
+                                                   conn_dim = conn_dim,
+                                                   hidden_layers = nsl_hidden_layers,
                                                    dtype = self.dtype, 
                                                    device = self.device,
                                                    use_phospho = use_phospho)
+        else:
+            self.nodes_sites_layer = NodesSitesMapping(nodes_sites_map = self.nodes_sites_map,
+                                                    hidden_layers = nsl_hidden_layers,
+                                                    dtype = self.dtype, 
+                                                    device = self.device,
+                                                    use_phospho = use_phospho)
+            
         self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
         
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
