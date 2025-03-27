@@ -146,6 +146,12 @@ class CellLineNetwork(nn.Module):
         X_bias = self.network(X_cell)
         return X_bias
     
+    def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
+        reg_loss = 0.0
+        for param in self.parameters():
+            reg_loss += torch.sum(param ** 2)
+        return lambda_L2 * reg_loss
+    
 
 class XssCellLineNetwork(nn.Module):
     """Fully connected network to handle cell line information."""
@@ -200,6 +206,12 @@ class XssCellLineNetwork(nn.Module):
         """
         X_bias = self.network(X_cell)
         return X_bias
+    
+    def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
+        reg_loss = 0.0
+        for param in self.parameters():
+            reg_loss += torch.sum(torch.square(param))
+        return lambda_L2 * reg_loss
 
 
 class BioNet(nn.Module):
@@ -391,7 +403,9 @@ class BioNet(nn.Module):
         X_bias = X_full.T + self.bias # this is the bias with the projection_amplitude included
         if self.cell_line_network is not None:
             cell_line_bias = self.cell_line_network(X_cell)
-            X_bias = X_bias + cell_line_bias.T  # Add the cell line bias term
+            #X_bias = X_bias + cell_line_bias.T  # Add the cell line bias term
+            gate = torch.sigmoid(cell_line_bias)  # scale outputs between 0 and 1
+            X_bias = X_bias + gate.T * cell_line_bias.T  # modulate the bias contribution
         
         if self.xss_cell_line_network is not None:
             X_new = self.xss_cell_line_network(X_cell).T  # initialize at cell line steady state
