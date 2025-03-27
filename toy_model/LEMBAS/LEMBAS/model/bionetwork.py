@@ -388,7 +388,7 @@ class BioNet(nn.Module):
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
 
-        X_bias = X_full.T + self.bias # this is the bias with the projection_amplitude included  
+        X_bias = X_full.T + self.bias # this is the bias with the projection_amplitude included
         if self.cell_line_network is not None:
             cell_line_bias = self.cell_line_network(X_cell)
             X_bias = X_bias + cell_line_bias.T  # Add the cell line bias term
@@ -743,7 +743,7 @@ class NodesSitesMapping(nn.Module):
         
         # Create a learnable vector for allowed connections
         if use_phospho:
-            self.real_weights = nn.Parameter(torch.ones(n_nonzero, dtype=self.dtype, device=self.device))
+            self.real_weights = nn.Parameter(torch.randn(n_nonzero, dtype=self.dtype, device=self.device)+1)
             self.bias = nn.Parameter(torch.zeros(output_dim, dtype=self.dtype, device=self.device))
         else:
             # Register as a buffer so it’s not trainable; it will remain ones
@@ -778,26 +778,85 @@ class NodesSitesMapping(nn.Module):
         Y_mapped = Y_mapped_reshaped.view(samples, time_points, -1)
         
         return Y_mapped
-    
-    def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
-        """Get the L2 regularization term for the neural network parameters.
-        
-        Parameters
-        ----------
-        lambda_2 : Annotated[float, Ge(0)]
-            the regularization parameter, by default 0 (no penalty) 
-        
-        Returns
-        -------
-        bionet_L2 : torch.Tensor
-            the regularization term
-        """
-        bias_loss = lambda_L2 * torch.sum(torch.square(self.bias))
-        weight_loss = lambda_L2 * torch.sum(torch.square(self.real_weights - 1))
-        return weight_loss + bias_loss
 
 
 class NodesSitesMapping_embedding(nn.Module):
+    """
+     Alternative mapping layer that converts node-level outputs to phosphosite outputs.
+    It first aggregates node outputs to site-level via a one-hot mapping (nodes_sites_map).
+    Then, for each site, concatenates the aggregated scalar with a learned site embedding,
+    and feeds the combined vector through an MLP to produce the final output.
+    
+    Input:
+         Y_full: torch.Tensor of shape (samples, time_points, n_nodes)
+    Output:
+         Y_mapped: torch.Tensor of shape (samples, time_points, n_sites)
+    """
+    def __init__(self, nodes_sites_map: pd.DataFrame, conn_dim: int = 10,
+                 hidden_layers: Dict[int, int] = None,
+                 dtype: torch.dtype = torch.float32, device: str = 'cpu', use_phospho: bool = True):
+        super().__init__()
+        self.device = device
+        self.dtype = dtype
+        self.conn_dim = conn_dim
+
+        self.n_sites = nodes_sites_map.shape[0]  # number of phosphosites
+        self.n_nodes = nodes_sites_map.shape[1]  # number of signaling nodes
+        
+        self.mapping_tensor = torch.tensor(nodes_sites_map.values, dtype=self.dtype, device=self.device)
+
+        # Create node embedding (nodes x conn_dim)
+        self.site_embedding = nn.Parameter(torch.randn(self.n_sites, conn_dim, dtype=self.dtype, device=self.device))
+        torch.nn.init.orthogonal_(self.site_embedding)  # Initialize with orthogonal matrix
+
+        # Construct an MLP that maps from conn_dim to 1
+        mlp_input_dim = 1 + conn_dim
+        layers = []
+        if hidden_layers:
+            input_dim = mlp_input_dim
+            for key in sorted(hidden_layers.keys()):
+                layers.append(nn.Linear(input_dim, hidden_layers[key], bias=True))
+                layers.append(nn.ReLU())
+                input_dim = hidden_layers[key]
+            # Final layer outputs one scalar per site.
+            layers.append(nn.Linear(input_dim, 1, bias=True))
+        else:
+            layers.append(nn.Linear(mlp_input_dim, 1, bias=True))
+        
+        self.non_linear = nn.Sequential(*layers).to(device, dtype)
+        
+    def forward(self, Y_full: torch.Tensor):
+        """
+        Forward pass.
+        
+        Parameters
+        ----------
+        Y_full : torch.Tensor
+            Node-level outputs (samples, time_points, n_nodes)
+        
+        Returns
+        -------
+        Y_mapped : torch.Tensor
+            Phosphosite outputs (samples, time_points, n_sites)
+        """
+        samples, time_points, _ = Y_full.shape
+        
+        B = samples * time_points
+        
+        site_agg = torch.matmul(Y_full, self.mapping_tensor.t())  # (samples, time_points, n_sites)
+        site_agg_unsq = site_agg.unsqueeze(-1)  # (samples, time_points, n_sites, 1)
+        emb_exp = self.site_embedding.unsqueeze(0).unsqueeze(0).expand(samples, time_points, self.n_sites, self.conn_dim)
+        mlp_input = torch.cat((site_agg_unsq, emb_exp), dim=-1)
+        
+        B = samples * time_points * self.n_sites
+        mlp_input_flat = mlp_input.view(B, -1)  # (B, 1 + conn_dim)
+        mlp_output_flat = self.non_linear(mlp_input_flat)  # (B, 1)
+        Y_mapped = mlp_output_flat.view(samples, time_points, self.n_sites)
+        
+        return Y_mapped
+
+
+class NodesSitesMapping_embedding_ka(nn.Module):
     """
     Revised mapping layer that converts signaling node outputs to phosphosite outputs.
     Here, a learnable node embedding (of shape (n_nodes, conn_dim)) is applied to the node outputs.
@@ -835,15 +894,22 @@ class NodesSitesMapping_embedding(nn.Module):
                 layers.append(nn.ReLU())
                 input_size = hidden_layers[key]
         # Final layer that outputs a single scalar per site
-        layers.append(nn.Linear(input_size, 1, bias=False))
+        layers.append(nn.Linear(input_size, 1, bias=True))
         self.non_linear = nn.Sequential(*layers).to(device, dtype)
         
     def forward(self, Y_full: torch.Tensor):
         """
-        Parameters:
-          Y_full : torch.Tensor of shape (samples, time_points, n_nodes)
-        Returns:
-          Y_mapped : torch.Tensor of shape (samples, time_points, n_sites)
+        Forward pass.
+        
+        Parameters
+        ----------
+        Y_full : torch.Tensor
+            Node-level outputs (samples, time_points, n_nodes)
+        
+        Returns
+        -------
+        Y_mapped : torch.Tensor
+            Phosphosite outputs (samples, time_points, n_sites)
         """
         samples, time_points, n_nodes = Y_full.shape
         B = samples * time_points
@@ -866,18 +932,9 @@ class NodesSitesMapping_embedding(nn.Module):
         Y_mapped = out.view(samples, time_points, self.output_dim)
         return Y_mapped
 
-    def L2_reg(self, lambda_L2: float = 0):
-        """
-        L2 regularization on the node embeddings and all parameters of the non-linear MLP.
-        """
-        emb_reg = torch.sum(self.node_embedding ** 2)
-        mlp_reg = sum(torch.sum(param ** 2) for param in self.non_linear.parameters())
-        reg = lambda_L2 * (emb_reg + mlp_reg)
-        return reg
-
 
 class CumsumMapping(nn.Module):
-    def __init__(self, bionet_params: Dict[str, float], K: int = 8):
+    def __init__(self, bionet_params: Dict[str, float], K: int = 8, use_time: bool = True):
         """
         Parameter
         ----------
@@ -895,25 +952,32 @@ class CumsumMapping(nn.Module):
             Seed for random initialization, by default None.
         """
         super().__init__()
-        self.L = bionet_params['max_steps']
-        self.K = K
-        
-        # Initialize K raw parameters for increments.
-        # We set the first element to a very low value (e.g., -3) so that softplus gives a small number,
-        # and initialize the others to a constant so that softplus outputs ~1.
-        self.delta_raw = nn.Parameter(torch.empty(K))
-        nn.init.constant_(self.delta_raw, 0.541)  # so softplus(0.541) ≈ 1.0
+        if use_time:
+            self.L = bionet_params['max_steps']
+            self.K = K
             
-        with torch.no_grad():
-            self.delta_raw[0] = -3.0  # so softplus(-3.0) ≈ 0.05
-        
-        # Learnable parameter for the upper bound.
-        # We want u to lie in (0, L), so we use a sigmoid scaling.
-        self.u_raw = nn.Parameter(torch.tensor(0.0))  # initial u ~ L * sigmoid(0)=L/2
-        
-        # Learnable nonlinearity parameter alpha.
-        # Initialize to a negative value to bias more anchors toward the beginning.
-        self.alpha = nn.Parameter(torch.tensor(-1.0))
+            # Initialize K raw parameters for increments.
+            # We set the first element to a very low value (e.g., -3) so that softplus gives a small number,
+            # and initialize the others to a constant so that softplus outputs ~1.
+            self.delta_raw = nn.Parameter(torch.empty(K))
+            nn.init.constant_(self.delta_raw, 0.541)  # so softplus(0.541) ≈ 1.0
+                
+            with torch.no_grad():
+                self.delta_raw[0] = -3.0  # so softplus(-3.0) ≈ 0.05
+            
+            # Learnable parameter for the upper bound.
+            # We want u to lie in (0, L), so we use a sigmoid scaling.
+            self.u_raw = nn.Parameter(torch.tensor(0.0))  # initial u ~ L * sigmoid(0)=L/2
+            
+            # Learnable nonlinearity parameter alpha.
+            # Initialize to a negative value to bias more anchors toward the beginning.
+            self.alpha = nn.Parameter(torch.tensor(-1.0))
+        else:
+            self.L = 1
+            self.K = 1
+            self.register_buffer('delta_raw', torch.empty(K))
+            self.register_buffer('u_raw', torch.tensor(0.0))
+            self.register_buffer('alpha', torch.tensor(-1.0))
     
     def forward(self):
         """
@@ -1044,6 +1108,7 @@ class SignalingModel(torch.nn.Module):
         xssn_hidden_layers = module_params['xssn_hidden_layers']
         nsl_hidden_layers = module_params['nsl_hidden_layers']
         n_timepoints = module_params['n_timepoints']
+        use_time = module_params['use_time']
         use_phospho = module_params['use_phospho']
         conn_dim = module_params['conn_dim']
         
@@ -1092,8 +1157,8 @@ class SignalingModel(torch.nn.Module):
                                                     dtype = self.dtype, 
                                                     device = self.device,
                                                     use_phospho = use_phospho)
-            
-        self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints)
+        
+        self.time_layer = CumsumMapping(bionet_params = bionet_params, K = n_timepoints, use_time = use_time)
         
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
                  weight_label: str = 'mode_of_action', source_label: str = 'source', target_label: str = 'target'):
@@ -1181,12 +1246,14 @@ class SignalingModel(torch.nn.Module):
         `forward` methods of each layer for details."""
         X_full = self.input_layer(X_in) # input ligands to signaling network
         Y_full, Y_fullFull = self.signaling_network(X_full, X_cell) # RNN of full signaling network
+        
+        Y_fullprotein = Y_fullFull
         # Mask for non-overlapping signaling nodes  with PKN before mapping to phosphosites
         mask = torch.tensor([i not in missing_indexes for i in range(len(self.node_labels))])
         Y_fullFull = Y_fullFull[:, :, mask]
         Y_fullFull = self.nodes_sites_layer(Y_fullFull)  # Map signaling nodes to phosphosites
         Y_hat = self.output_layer(Y_full) # TF outputs of signaling network
-        return Y_hat, Y_full, Y_fullFull
+        return Y_hat, Y_full, Y_fullFull, Y_fullprotein
     
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the neural network parameters.
