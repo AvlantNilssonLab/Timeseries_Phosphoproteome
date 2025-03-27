@@ -438,16 +438,12 @@ def train_signaling_model(mod,
 
             #Y_hat = mod.output_layer(Y_full)
             
-            # Subsample Y_subsampled 2nd dimension (time points) to calculate loss
-            time_points = [int(idx.rsplit('_', 1)[-1]) for idx in y_train_index]
-            seen = set()
-            unique_time_points = [x for x in time_points if not (x in seen or seen.add(x))]
-            
+            # Subsample Y_subsampled 2nd dimension (time points) to calculate loss 
             use_time = hyper_params['use_time']
             if use_time:
                 Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
             else:
-                #unique_time_points = np.linspace(0, 149, 8).astype(int)
+                unique_time_points = [0, 1, 2, 5, 10, 20, 30, 50]
                 Y_subsampled = Y_fullFull[:, unique_time_points, :]
             
             # Mask NaN with 0 to skip loss calculation
