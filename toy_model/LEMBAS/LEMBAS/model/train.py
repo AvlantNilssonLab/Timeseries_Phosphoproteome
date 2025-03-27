@@ -447,6 +447,7 @@ def train_signaling_model(mod,
             if use_time:
                 Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
             else:
+                #unique_time_points = np.linspace(0, 149, 8).astype(int)
                 Y_subsampled = Y_fullFull[:, unique_time_points, :]
             
             # Mask NaN with 0 to skip loss calculation

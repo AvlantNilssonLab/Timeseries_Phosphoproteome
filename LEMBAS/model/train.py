@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
 import LEMBAS.utilities as utils
 
@@ -390,9 +391,18 @@ def train_signaling_model(mod,
     # begin iteration 
     mod.signaling_network.force_sparcity()
     for e in range(hyper_params['max_iter']):
-        # set learning rate
-        cur_lr = utils.get_lr(e, hyper_params['max_iter'], max_height = hyper_params['learning_rate'],
-                              start_height=hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
+        # set learning rate either as a variable or constant
+        if hyper_params.get("variable_lr", True):
+            cur_lr = utils.get_lr(
+                e,
+                hyper_params['max_iter'],
+                max_height=hyper_params['learning_rate'],
+                start_height=hyper_params['learning_rate'] / 10,
+                end_height=1e-6,
+                peak=1000
+            )
+        else:
+            cur_lr = hyper_params['learning_rate']
         optimizer.param_groups[0]['lr'] = cur_lr
         for param_group in optimizer.param_groups:
             if param_group['lr'] == time_layer_lr:
@@ -437,6 +447,7 @@ def train_signaling_model(mod,
             if use_time:
                 Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
             else:
+                #unique_time_points = np.linspace(0, 149, 8).astype(int)
                 Y_subsampled = Y_fullFull[:, unique_time_points, :]
             
             # Mask NaN with 0 to skip loss calculation
@@ -447,6 +458,12 @@ def train_signaling_model(mod,
             
             # get prediction loss
             fit_loss = loss_fn(y_out_noise, Y_subsampled)
+            
+            # get dynamic loss
+            dynamics_pred = Y_subsampled[:,1:,:] - Y_subsampled[:,:-1,:]
+            dynamics_true = y_out_noise[:,1:,:] - y_out_noise[:,:-1,:]
+            lambda_dynamic = hyper_params.get('lambda_dynamic', 0.1)
+            dynamic_loss = F.l1_loss(dynamics_pred, dynamics_true) * lambda_dynamic
             
             # get regularization losses
             sign_reg = mod.signaling_network.sign_regularization(lambda_L1 = hyper_params['moa_lambda_L1']) # incorrect MoA
@@ -459,7 +476,7 @@ def train_signaling_model(mod,
             
             param_reg = mod.L2_reg(lambda_L2 = hyper_params['param_lambda_L2']) # all model weights and signaling network biases
             
-            total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
+            total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg #+ dynamic_loss
     
             # gradient
             total_loss.backward()
