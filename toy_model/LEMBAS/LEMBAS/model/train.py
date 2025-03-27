@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
 import LEMBAS.utilities as utils
 
@@ -457,6 +458,12 @@ def train_signaling_model(mod,
             # get prediction loss
             fit_loss = loss_fn(y_out_noise, Y_subsampled)
             
+            # get dynamic loss
+            dynamics_pred = Y_subsampled[:,1:,:] - Y_subsampled[:,:-1,:]
+            dynamics_true = y_out_noise[:,1:,:] - y_out_noise[:,:-1,:]
+            lambda_dynamic = hyper_params.get('lambda_dynamic', 0.1)
+            dynamic_loss = F.l1_loss(dynamics_pred, dynamics_true) * lambda_dynamic
+            
             # get regularization losses
             sign_reg = mod.signaling_network.sign_regularization(lambda_L1 = hyper_params['moa_lambda_L1']) # incorrect MoA
             ligand_reg = mod.ligand_regularization(lambda_L2 = hyper_params['ligand_lambda_L2']) # ligand biases
@@ -468,7 +475,7 @@ def train_signaling_model(mod,
             
             param_reg = mod.L2_reg(lambda_L2 = hyper_params['param_lambda_L2']) # all model weights and signaling network biases
             
-            total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
+            total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg #+ dynamic_loss
     
             # gradient
             total_loss.backward()
