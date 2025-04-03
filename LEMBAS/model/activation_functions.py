@@ -113,9 +113,7 @@ def leakyReLU_activation(x, leak=0.01):
     fx
         a vector of output values
     """
-    fx = np.copy(x)
-    fx = np.where(fx < 0, fx * leak, fx)
-    return fx
+    return torch.where(x < 0, x * leak, x)
 
 def leakyReLU_delta_activation(x, leak=0.01):
     """Returns the derivative of the leaky ReLU function
@@ -136,10 +134,10 @@ def leakyReLU_delta_activation(x, leak=0.01):
     y = np.where(x <= 0, leak, y)  #let derivative be 0.01 at x=0
     return y
 
-def leakyReLU_onestepdelta_activation_factor(yhatFull, leak=0.01):  #Note that this will only work for monoton functions
-    y = torch.ones(y_hat_full.shape, dtype=y_hat_full.dtype)
-    piece1 = y_hat_full<=0
-    y[piece1] = torch.tensor(leak, dtype=y_hat_full.dtype)
+def leakyReLU_onestepdelta_activation_factor(yhatFull, leak=0.01):
+    y = torch.ones(yhatFull.shape, dtype=yhatFull.dtype, device=yhatFull.device)
+    piece1 = yhatFull <= 0
+    y[piece1] = torch.tensor(leak, dtype=yhatFull.dtype, device=yhatFull.device)
     return y
 
 def leakyReLU_inv_activation(x, leak=0.01):
