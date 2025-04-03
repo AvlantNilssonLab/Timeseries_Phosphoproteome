@@ -266,7 +266,7 @@ net = pd.read_csv(data_path, sep = '\t', index_col = False)
 x_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_x.csv'), sep=',', low_memory=False, index_col=0)
 x_cell = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_xcell.csv'), sep=',', low_memory=False, index_col=0)
 x_drug = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_xdrug.csv'), sep=',', low_memory=False, index_col=0)
-y_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_y.csv'), sep=',', low_memory=False, index_col=0)
+y_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_y_scaled.csv'), sep=',', low_memory=False, index_col=0)
 nodes_sites_map = pd.read_csv(os.path.join(current_dir, 'data', 'nodes_sites_map.csv'), sep=',', low_memory=False, index_col=0)
 
 
@@ -287,8 +287,9 @@ bionet_params = {'target_steps': 100, 'max_steps': 150, 'exp_factor':50, 'tolera
 
 # training parameters
 lr_params = {'max_iter': 3000, 
-             'learning_rate': 2e-3}
-other_params = {'batch_size': 10, 'noise_level': 10, 'gradient_noise_level': 1e-9}
+             'learning_rate': 2e-3,
+             'variable_lr': True}
+other_params = {'lambda_dynamic': 1, 'batch_size': 10, 'noise_level': 10, 'gradient_noise_level': 1e-9}
 regularization_params = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
                    'uniform_max': 1/projection_amplitude_out, 'spectral_loss_factor': 1e-5}
 spectral_radius_params = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
