@@ -15,7 +15,7 @@ import torch.nn.functional as F
 
 import LEMBAS.utilities as utils
 
-LR_PARAMS = {'max_iter': 5000, 'learning_rate': 2e-3}
+LR_PARAMS = {'max_iter': 5000, 'learning_rate': 2e-3, 'variable_lr': False}
 OTHER_PARAMS = {'batch_size': 8, 'noise_level': 10, 'gradient_noise_level': 1e-9}
 REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'output_bias_lambda_L2': 1e-6,
                          'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
@@ -392,7 +392,7 @@ def train_signaling_model(mod,
     mod.signaling_network.force_sparcity()
     for e in range(hyper_params['max_iter']):
         # set learning rate either as a variable or constant
-        if hyper_params.get("variable_lr", True):
+        if hyper_params["variable_lr"]:
             cur_lr = utils.get_lr(
                 e,
                 hyper_params['max_iter'],
@@ -426,7 +426,7 @@ def train_signaling_model(mod,
             X_full = mod.input_layer(X_in_) # transform to full network with ligand input concentrations
             utils.set_seeds(mod.seed + mod._gradient_seed_counter)
             network_noise = torch.randn(X_full.shape, device = X_full.device)
-            X_full = X_full + (hyper_params['noise_level'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
+            X_full = X_full #+ (hyper_params['noise_level'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
             Y_full, Y_fullFull = mod.signaling_network(X_full, X_cell_) # train signaling network weights
             
             # Subsample Y_subsampled 3rd dimension (signaling nodes) to calculate loss before map the phosphosites
@@ -443,7 +443,7 @@ def train_signaling_model(mod,
             if use_time:
                 Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
             else:
-                unique_time_points = [0, 1, 2, 5, 10, 20, 30, 50]
+                unique_time_points = [0, 2, 4, 8, 12]
                 Y_subsampled = Y_fullFull[:, unique_time_points, :]
             
             # Mask NaN with 0 to skip loss calculation
