@@ -824,7 +824,7 @@ class NodesSitesMapping_embedding(nn.Module):
         torch.nn.init.orthogonal_(self.site_embedding)  # Initialize with orthogonal matrix
 
         # Construct an MLP that maps from conn_dim to 1
-        mlp_input_dim = 1 + conn_dim
+        mlp_input_dim = conn_dim
         layers = []
         if hidden_layers:
             input_dim = mlp_input_dim
@@ -860,7 +860,7 @@ class NodesSitesMapping_embedding(nn.Module):
         site_agg = torch.matmul(Y_full, self.mapping_tensor.t())  # (samples, time_points, n_sites)
         site_agg_unsq = site_agg.unsqueeze(-1)  # (samples, time_points, n_sites, 1)
         emb_exp = self.site_embedding.unsqueeze(0).unsqueeze(0).expand(samples, time_points, self.n_sites, self.conn_dim)
-        mlp_input = torch.cat((site_agg_unsq, emb_exp), dim=-1)
+        mlp_input = emb_exp * site_agg_unsq
         
         B = samples * time_points * self.n_sites
         mlp_input_flat = mlp_input.view(B, -1)  # (B, 1 + conn_dim)
