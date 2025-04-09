@@ -158,7 +158,7 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         loss_df = pd.DataFrame({'loss_mean': loss_smooth, 'loss_sigma': loss_sigma_smooth}, index=epochs)
         
         # Evaluation on training data
-        Y_hat_train, Y_full_train, Y_fullFull_train = model_trained(X_train, X_cell_train, missing_node_indexes)
+        Y_hat_train, Y_full_train, Y_fullFull_train, Y_fullprotein = model_trained(X_train, X_cell_train, missing_node_indexes)
         if hyper_params['use_time']:
             Y_sub_train_ = subsample_Y(Y_fullFull_train, floor_idx, ceil_idx, weight)
         else:
@@ -197,7 +197,7 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         # Evaluation on Test Data
         X_test = mod.df_to_tensor(X_test)
         X_cell_test = mod.df_to_tensor(X_cell_test)
-        Y_hat_test, Y_full_test, Y_fullFull_test = model_trained(X_test, X_cell_test, missing_node_indexes)
+        Y_hat_test, Y_full_test, Y_fullFull_test, Y_fullprotein = model_trained(X_test, X_cell_test, missing_node_indexes)
         if hyper_params['use_time']:
             Y_sub_test_ = subsample_Y(Y_fullFull_test, floor_idx, ceil_idx, weight)
         else:
@@ -217,7 +217,6 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
         mask_test = ~np.isnan(y_pred_test_np) & ~np.isnan(y_actual_test_np)
         y_pred_test_filtered = y_pred_test_np[mask_test]
         y_actual_test_filtered = y_actual_test_np[mask_test]
-        
         pr_test, _ = pearsonr(y_pred_test_filtered, y_actual_test_filtered)
         
         # Prepare test datasets to export
@@ -245,6 +244,125 @@ def train_cv(mod, net, hyper_params, n_cv = 5):
     return cv_results
 
 
+def train_full(mod, net, hyper_params, x_test, x_cell_test, y_test):
+    """
+    Train the model on the full training set (mod.y_out) and evaluate on the test set.
+
+    Parameters
+    ----------
+    mod : SignalingModel
+        The model to be trained (initialized with the full training data).
+    net : pd.DataFrame
+        The prior knowledge signaling network.
+    hyper_params : dict
+        Hyperparameters for training.
+    x_test : pd.DataFrame
+        Test set input data.
+    x_cell_test : pd.DataFrame
+        Test set cell data.
+    y_test : pd.DataFrame
+        Test set output data.
+
+    Returns
+    -------
+    results : dict
+        Dictionary containing training and test evaluation results.
+    """
+    print("Training on the full dataset...")
+
+    # Reset certain parts of the model (e.g., fix input layer scaling, spectral prescaling)
+    mod.input_layer.weights.requires_grad = False
+    mod.signaling_network.prescale_weights(target_radius=target_spectral_radius)
+
+    # Define loss function and optimizer
+    loss_fn = torch.nn.MSELoss(reduction='mean')
+    optimizer = torch.optim.Adam
+
+    # Make a deepcopy for training so that original mod is preserved if needed
+    mod_full = copy.deepcopy(mod)
+
+    # Process training outputs (assumes mod_full.y_out has a column 'Drug_CL_Time')
+    y_out_proc = mod_full.y_out.reset_index()
+    y_out_proc['Time'] = y_out_proc['Drug_CL_Time'].str.split('_').str[-1].astype(int)
+    y_out_proc['Drug_CL'] = y_out_proc['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
+    y_train_proc = y_out_proc.drop(columns=['Drug_CL_Time']).sort_values(by=['Time', 'Drug_CL'])
+    y_train_proc['Drug_CL_Time'] = y_train_proc['Drug_CL'] + '_' + y_train_proc['Time'].astype(str)
+    y_train_proc = y_train_proc.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])
+    mod_full.y_out = y_train_proc
+
+    # Train model on the full training set
+    model_trained, cur_loss, cur_eig, mean_loss, stats, X_train, X_test_, \
+    X_train_index, y_train, y_test_, y_train_index, X_cell_train, \
+    X_cell_test_, missing_node_indexes, floor_idx, ceil_idx, weight = train_signaling_model(
+            mod_full, net, optimizer, loss_fn,
+            reset_epoch=200,
+            hyper_params=hyper_params,
+            train_split_frac={'train': 1.0, 'test': 0.0},
+            train_seed=49,
+            split_by='condition',
+            noise_scale=0
+        )
+
+    '''# --- Evaluation on Test Data ---
+    y_test_proc = y_test.reset_index()
+    y_test_proc['Time'] = y_test_proc['Drug_CL_Time'].str.split('_').str[-1].astype(int)
+    y_test_proc['Drug_CL'] = y_test_proc['Drug_CL_Time'].str.rsplit('_', n=1).str[0]
+    y_test_proc = y_test_proc.drop(columns=['Drug_CL_Time']).sort_values(by=['Time', 'Drug_CL'])
+    y_test_proc['Drug_CL_Time'] = y_test_proc['Drug_CL'] + '_' + y_test_proc['Time'].astype(str)
+    y_test_proc = y_test_proc.set_index('Drug_CL_Time').drop(columns=['Drug_CL', 'Time'])'''
+
+    # Convert test data to tensors
+    X_test_tensor = mod.df_to_tensor(x_test)
+    X_cell_test_tensor = mod.df_to_tensor(x_cell_test)
+
+    # Forward pass on test data
+    Y_hat_test, Y_full_test, Y_fullFull_test, Y_fullprotein = model_trained(
+        X_test_tensor, X_cell_test_tensor, missing_node_indexes)
+    if hyper_params.get('use_time', True):
+        Y_sub_test_ = subsample_Y(Y_fullFull_test, floor_idx, ceil_idx, weight)
+    else:
+        unique_time_points = np.linspace(0, Y_full_test.shape[1]-1, hyper_params.get('n_timepoints', 8)).astype(int)
+        Y_sub_test_ = Y_full_test[:, unique_time_points, :]
+
+    Y_sub_test_ = Y_sub_test_.permute(1, 0, 2)
+    Y_sub_test = Y_sub_test_ - Y_sub_test_[0:1, :, :]
+    Y_sub_test = torch.flatten(Y_sub_test, start_dim=0, end_dim=1)
+
+    # Process true test outputs similarly
+    y_test_tensor = mod.df_to_tensor(y_test)
+    y_actual_test = y_test_tensor.reshape(8, len(x_test.index), mod.y_out.shape[1])
+    y_actual_test = y_actual_test - y_actual_test[0:1, :, :]
+    y_actual_test = torch.flatten(y_actual_test, start_dim=0, end_dim=1)
+
+    # Compute Pearson correlation
+    y_pred_test_np = Y_sub_test.detach().cpu().numpy().flatten()
+    y_actual_test_np = y_actual_test.detach().cpu().numpy().flatten()
+    mask_test = ~np.isnan(y_pred_test_np) & ~np.isnan(y_actual_test_np)
+    y_pred_test_filtered = y_pred_test_np[mask_test]
+    y_actual_test_filtered = y_actual_test_np[mask_test]
+    pr_test, _ = pearsonr(y_pred_test_filtered, y_actual_test_filtered)
+
+    # Prepare test data for export (long format)
+    true_test_long = (y_test.reset_index()
+                      .melt(id_vars="Drug_CL_Time", var_name="Site", value_name="True"))
+    true_test_long["Drug_CL_Time_Site"] = true_test_long["Drug_CL_Time"].astype(str) + "_" + true_test_long["Site"].astype(str)
+    true_test_long = true_test_long.set_index("Drug_CL_Time_Site")
+    
+    Y_sub_test_flat = torch.flatten(Y_sub_test_, start_dim=0, end_dim=1)
+    pred_test_array = Y_sub_test_flat.detach().cpu().numpy().flatten(order='F')
+    pred_test_series = pd.Series(pred_test_array, index=true_test_long.index, name="Predicted")
+    test_df = true_test_long.join(pred_test_series, how="inner")
+
+    print(f"Test Pearson r: {pr_test:.2f}")
+
+    # Return a dict similar to the cross validation function
+    results = {
+        "training": {"loss_mean": mean_loss, "loss": stats},
+        "test": {"data": test_df, "pearson": pr_test}
+    }
+    return results
+
+
 n_cores = 12
 utils.set_cores(n_cores)
 
@@ -265,10 +383,13 @@ net = pd.read_csv(data_path, sep = '\t', index_col = False)
 # Synthetic data input and output
 x_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_x.csv'), sep=',', low_memory=False, index_col=0)
 x_cell = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_xcell.csv'), sep=',', low_memory=False, index_col=0)
-x_drug = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_xdrug.csv'), sep=',', low_memory=False, index_col=0)
+x_drug = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_xdrug_comb.csv'), sep=',', low_memory=False, index_col=0)
 y_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_y_scaled.csv'), sep=',', low_memory=False, index_col=0)
 nodes_sites_map = pd.read_csv(os.path.join(current_dir, 'data', 'nodes_sites_map.csv'), sep=',', low_memory=False, index_col=0)
 
+x_data_test = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_x_test.csv'), sep=',', low_memory=False, index_col=0)
+x_cell_test = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_xcell_test.csv'), sep=',', low_memory=False, index_col=0)
+y_data_test = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic_data_y_test.csv'), sep=',', low_memory=False, index_col=0)
 
 stimulation_label = 'stimulation'
 inhibition_label = 'inhibition'
@@ -309,14 +430,14 @@ module_params = {
 
 # Ablation study configurations
 ablation_configs = [
-    {'name': 'initial',  'use_time': False, 'use_phospho': False, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
-    {'name': 'with_time',  'use_time': True, 'use_phospho': False, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
-    {'name': 'with_time_with_phospho',  'use_time': True, 'use_phospho': True, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
-    {'name': 'with_time_with_phospho_with_bcell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
-    {'name': 'with_all',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    #{'name': 'initial',  'use_time': False, 'use_phospho': False, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    #{'name': 'with_time',  'use_time': True, 'use_phospho': False, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    #{'name': 'with_time_with_phospho',  'use_time': True, 'use_phospho': True, 'use_cln': False, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    #{'name': 'with_time_with_phospho_with_bcell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': False, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
+    #{'name': 'with_all',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': None, 'xssn_hidden_layers': None},
     {'name': 'with_all_hiddenlayers_in_cell',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}},
     #{'name': 'with_all_hiddenlayers_in_cell_embedding',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}, 'conn_dim': 5, 'nsl_hidden_layers': {1: 64}},
-    {'name': 'random',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}, 'shuffle': True}
+    #{'name': 'random',  'use_time': True, 'use_phospho': True, 'use_cln': True, 'use_xssn': True, 'cln_hidden_layers': {1: 64, 2: 16}, 'xssn_hidden_layers': {1: 64, 2: 16}, 'shuffle': True}
 ]
 
 for config in ablation_configs:
@@ -366,15 +487,24 @@ for config in ablation_configs:
 
     # Train model with 5-fold cross-validation
     cv_results = train_cv(mod, net, hyper_params, n_cv=5)
+    # Train model on the full training set and evaluate on the test set
+    full_train_results = train_full(mod, net, hyper_params, x_test=x_data_test, x_cell_test=x_cell_test, y_test=y_data_test)
     
     print("Saving results...")
     config_results_path = os.path.join(current_dir, "results", "ablation_study_res", f"cv_results_{config['name']}.pkl")
     data_path = os.path.join(config_results_path)
     with open(data_path, "wb") as f:
         pickle.dump(cv_results, f)
+        
+    config_test_path = os.path.join(current_dir, "results", "ablation_study_res", f"full_train_results_{config['name']}.pkl")
+    test_data_path = os.path.join(config_test_path)
+    with open(test_data_path, "wb") as f:
+        pickle.dump(full_train_results, f)
 
-'''# Load results
-config_results_path = os.path.join(current_dir, "results", "ablation_study_res", "cv_results_with_all_hiddenlayers_in_cell.pkl")
+
+# Load results
+'''
+config_results_path = os.path.join(current_dir, "results", "ablation_study_res", "full_train_results_with_all_hiddenlayers_in_cell.pkl")
 data_path = os.path.join(config_results_path)
 with open(data_path, "rb") as f:
     cv_results_load = pickle.load(f)
