@@ -20,7 +20,7 @@ OTHER_PARAMS = {'batch_size': 8, 'noise_level': 10, 'gradient_noise_level': 1e-9
 REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'output_bias_lambda_L2': 1e-6,
                          'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
                          'uniform_min': 0,
-                   'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
+                   'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5, 'lambda_simplify': 1e-5}
 SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
 MODULE_PARAMS = {'use_time': True}
 HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS, **MODULE_PARAMS}
@@ -66,7 +66,9 @@ def split_data(X_in: torch.Tensor,
         train_time_points = np.random.choice(remaining_time_points, n_train_time_points, replace=False)
         train_time_points = np.sort((np.concatenate(([first_time_point], train_time_points, [last_time_point]))))
         test_time_points = np.sort(np.setdiff1d(unique_time_points, train_time_points))
-        print(f'Time points selected for training set: {train_time_points}')
+        
+        train_time_points = np.array([0, 4, 12])
+        test_time_points = np.array([2, 8])
         
         # Split the data based on the selected time points
         y_train = y_out[y_out['Time'].isin(train_time_points)]
@@ -82,6 +84,8 @@ def split_data(X_in: torch.Tensor,
         test_conditions = y_test.index.str.rsplit('_', n=1).str[0].unique()
         X_train = X_in.loc[train_conditions]
         X_test = X_in.loc[test_conditions]
+        
+        print(f'Time points selected for training set: {train_time_points}')
         
         return X_train, X_test, y_train, y_test, train_time_points.tolist(), test_time_points.tolist()
         
@@ -416,7 +420,7 @@ def train_signaling_model(mod,
         # iterate through batches
         if mod.seed:
             utils.set_seeds(mod.seed + e)
-        for batch, (X_in_, X_cell_, y_out_, mask_) in enumerate(train_dataloader):
+        for batch, (X_in_, X_cell_, y_out_, mask_) in enumerate(train_dataloader):    
             mod.train()
             optimizer.zero_grad()
 
@@ -443,9 +447,10 @@ def train_signaling_model(mod,
             if use_time:
                 Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
             else:
-                unique_time_points = [0, 2, 4, 8, 12]
+                unique_time_points = [0, 4, 12]  #[0, 2, 6, 24, 144]
                 Y_subsampled = Y_fullFull[:, unique_time_points, :]
             
+            Y_unmasked = Y_subsampled.clone()
             # Mask NaN with 0 to skip loss calculation
             y_out_.masked_fill_(~mask_, 0.0)
             Y_subsampled.masked_fill_(~mask_, 0.0)
@@ -456,10 +461,15 @@ def train_signaling_model(mod,
             fit_loss = loss_fn(y_out_noise, Y_subsampled)
             
             # get dynamic loss
-            dynamics_pred = Y_subsampled[:,1:,:] - Y_subsampled[:,:-1,:]
+            '''dynamics_pred = Y_subsampled[:,1:,:] - Y_subsampled[:,:-1,:]
             dynamics_true = y_out_noise[:,1:,:] - y_out_noise[:,:-1,:]
             lambda_dynamic = hyper_params.get('lambda_dynamic', 0.1)
-            dynamic_loss = F.l1_loss(dynamics_pred, dynamics_true) * lambda_dynamic
+            dynamic_loss = F.l1_loss(dynamics_pred, dynamics_true) * lambda_dynamic'''
+            
+            # get time series simplification loss
+            lambda_simplify = hyper_params['lambda_simplify']
+            diffs = Y_unmasked[:, 1:, :] - Y_unmasked[:, :-1, :]
+            smooth_loss = lambda_simplify * torch.mean(diffs ** 2)
             
             # get regularization losses
             sign_reg = mod.signaling_network.sign_regularization(lambda_L1 = hyper_params['moa_lambda_L1']) # incorrect MoA
@@ -472,13 +482,13 @@ def train_signaling_model(mod,
             
             param_reg = mod.L2_reg(lambda_L2 = hyper_params['param_lambda_L2']) # all model weights and signaling network biases
             
-            total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg #+ dynamic_loss
-    
+            total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg + smooth_loss #+ dynamic_loss
+            
             # gradient
             total_loss.backward()
             #mod.time_layer.print_gradients()
             #print("---------")
-            mod.add_gradient_noise(noise_level = hyper_params['gradient_noise_level'])
+            mod.add_gradient_noise(noise_level = hyper_params['gradient_noise_level'])  #*cur_lr**2
             optimizer.step()
             mod.signaling_network.force_sparcity()
             # store
