@@ -830,7 +830,7 @@ class NodesSitesMapping_embedding(nn.Module):
             input_dim = mlp_input_dim
             for key in sorted(hidden_layers.keys()):
                 layers.append(nn.Linear(input_dim, hidden_layers[key], bias=True))
-                layers.append(nn.ReLU())
+                layers.append(nn.LeakyReLU())
                 input_dim = hidden_layers[key]
             # Final layer outputs one scalar per site.
             layers.append(nn.Linear(input_dim, 1, bias=True))
