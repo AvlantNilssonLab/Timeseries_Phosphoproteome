@@ -1402,7 +1402,7 @@ class SignalingModel(torch.nn.Module):
 
         return lambda_L2 * loss
 
-    def add_gradient_noise(self, noise_level: Union[float, int]):
+    def add_gradient_noise(self, noise_level: Union[float, int], cur_lr: float):
         """Adds noise to backwards pass gradient calculations. Use during training to make model more robust. 
     
         Parameters
@@ -1416,7 +1416,7 @@ class SignalingModel(torch.nn.Module):
         for i in range(len(all_params)):
             if all_params[i].requires_grad:
                 all_noise = torch.randn(all_params[i].grad.shape, dtype=all_params[i].dtype, device=all_params[i].device)
-                all_params[i].grad += (noise_level * all_noise)
+                all_params[i].grad += (noise_level * (cur_lr**2) * all_noise)
     
         self._gradient_seed_counter += 1 # new random noise each time function is called
 

@@ -67,8 +67,8 @@ def split_data(X_in: torch.Tensor,
         train_time_points = np.sort((np.concatenate(([first_time_point], train_time_points, [last_time_point]))))
         test_time_points = np.sort(np.setdiff1d(unique_time_points, train_time_points))
         
-        train_time_points = np.array([0, 4, 12])
-        test_time_points = np.array([2, 8])
+        train_time_points = np.array([0, 12])
+        test_time_points = np.array([2, 4, 8])
         
         # Split the data based on the selected time points
         y_train = y_out[y_out['Time'].isin(train_time_points)]
@@ -229,6 +229,7 @@ def train_signaling_model(mod,
                           verbose: bool = True, 
                           break_nan: bool = True,
                           split_by: Literal['time', 'condition'] = 'time',
+                          unique_time_points: List[int] = None,
                           noise_scale: float = 0):
     """Trains the signaling model
 
@@ -277,6 +278,8 @@ def train_signaling_model(mod,
         whether to break the training loop if params contain nan
     split_by : Literal['time', 'condition'], optional
         criterion to split the data, by default 'time'
+    unique_time_points : List[int], optional
+        time points to use for subsampling the output data. If hyperparameter use_time == True, it will be skipped.
     noise_scale : float, optional
         scale factor used to multiply the noise, by default 0
 
@@ -446,10 +449,10 @@ def train_signaling_model(mod,
             use_time = hyper_params['use_time']
             if use_time:
                 Y_subsampled, floor_idx_full, ceil_idx_full, weight = soft_index(Y_fullFull, time_map)
-            else:
-                unique_time_points = [0, 4, 12]  #[0, 2, 6, 24, 144]
+            elif unique_time_points is not None:
                 Y_subsampled = Y_fullFull[:, unique_time_points, :]
-            
+            else:
+                raise ValueError('No time points provided for subsampling. Either set `use_time` to True or provide `unique_time_points`.')
             Y_unmasked = Y_subsampled.clone()
             # Mask NaN with 0 to skip loss calculation
             y_out_.masked_fill_(~mask_, 0.0)
@@ -488,7 +491,10 @@ def train_signaling_model(mod,
             total_loss.backward()
             #mod.time_layer.print_gradients()
             #print("---------")
-            mod.add_gradient_noise(noise_level = hyper_params['gradient_noise_level'])  #*cur_lr**2
+            
+            torch.nn.utils.clip_grad_norm_(mod.parameters(), max_norm=1.0)  # Gradient clipping to prevent exploding gradients
+            
+            mod.add_gradient_noise(noise_level = hyper_params['gradient_noise_level'], cur_lr = cur_lr) # add noise to gradients
             optimizer.step()
             mod.signaling_network.force_sparcity()
             # store
