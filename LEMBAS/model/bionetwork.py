@@ -869,8 +869,35 @@ class NodesSitesMapping_embedding(nn.Module):
         
         return Y_mapped
 
+    def L2_reg(self, lambda_L2: float = 0.0):
+        """
+        Compute L2 regularization for the embedding and MLP layers.
 
-class NodesSitesMapping_embedding_ka(nn.Module):
+        Parameters
+        ----------
+        lambda_L2 : float
+            L2 regularization coefficient.
+
+        Returns
+        -------
+        reg : torch.Tensor
+            The L2 regularization term.
+        """
+        reg = 0.0
+
+        # Regularize site embeddings
+        reg += torch.sum(self.site_embedding ** 2)
+
+        # Regularize MLP weights and biases
+        for layer in self.non_linear:
+            if isinstance(layer, nn.Linear):
+                reg += torch.sum(layer.weight ** 2)
+                if layer.bias is not None:
+                    reg += torch.sum(layer.bias ** 2)
+
+        return lambda_L2 * reg
+
+'''class NodesSitesMapping_embedding_ka(nn.Module):
     """
     Revised mapping layer that converts signaling node outputs to phosphosite outputs.
     Here, a learnable node embedding (of shape (n_nodes, conn_dim)) is applied to the node outputs.
@@ -944,7 +971,7 @@ class NodesSitesMapping_embedding_ka(nn.Module):
         # Reshape back to (B, n_sites)
         out = mlp_output.view(B, self.output_dim)
         Y_mapped = out.view(samples, time_points, self.output_dim)
-        return Y_mapped
+        return Y_mapped'''
 
 
 class CumsumMapping(nn.Module):
@@ -1284,7 +1311,7 @@ class SignalingModel(torch.nn.Module):
          : torch.Tensor
             the regularization term (as the sum of the regularization terms for each layer)
         """
-        return self.input_layer.L2_reg(lambda_L2) + self.signaling_network.L2_reg(lambda_L2) + self.output_layer.L2_reg(lambda_L2) #+ self.nodes_sites_layer.L2_reg(lambda_L2/10)
+        return self.input_layer.L2_reg(lambda_L2) + self.signaling_network.L2_reg(lambda_L2) + self.output_layer.L2_reg(lambda_L2) + self.nodes_sites_layer.L2_reg(lambda_L2)
 
     def ligand_regularization(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the ligand biases. Intuitively, extracellular ligands should not contribute to 
