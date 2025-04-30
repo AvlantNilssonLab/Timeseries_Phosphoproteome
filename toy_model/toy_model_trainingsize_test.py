@@ -232,23 +232,23 @@ bionet_params = {'target_steps': 100, 'max_steps': 150, 'exp_factor':50, 'tolera
 
 # training parameters
 lr_params = {'max_iter': 3000, 
-            'learning_rate': 2e-3,
-            'variable_lr': True}
+             'learning_rate': 2e-3,
+             'variable_lr': True}
 other_params = {'lambda_dynamic': 1, 'batch_size': 10, 'noise_level': 10, 'gradient_noise_level': 1e-2}  # 1e-7 if not using variable gradient noise
 regularization_params = {'param_lambda_L2': 1e-5, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
-                    'uniform_max': 1/projection_amplitude_out, 'spectral_loss_factor': 1e-5, 'lambda_simplify': 0}
+                   'uniform_max': 1/projection_amplitude_out, 'spectral_loss_factor': 1e-5, 'lambda_simplify': 0}
 spectral_radius_params = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
 target_spectral_radius = 0.8
 module_params = {
-        'use_cln': True,
-        'cln_hidden_layers': {1: 64, 2: 16},  # {1: 64, 2: 16}
-        'use_xssn': True,
-        'xssn_hidden_layers': None,
-        'use_time': True,
-        'n_timepoints': 8,
-        'use_phospho': True,
-        'nsl_hidden_layers': {1: 16, 2:8}, #{1: 16},
-        'conn_dim': 5 #5
+    'use_cln': True,
+    'cln_hidden_layers': {1: 64, 2: 16},  # {1: 64, 2: 16}
+    'use_xssn': True,
+    'xssn_hidden_layers': {1: 16},
+    'use_time': True,
+    'n_timepoints': 8,
+    'use_phospho': True,
+    'nsl_hidden_layers': {1: 16, 2:8}, #{1: 16},
+    'conn_dim': 5 #5
 }
 
 hyper_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params, **module_params}
@@ -464,4 +464,4 @@ p = (
     + p9.theme_bw()
 )
 
-p.show()
+p.save(os.path.join(current_dir, 'results','trainingsize_test','trainingsize_test.pdf'), width=10, height=6, dpi=300)
