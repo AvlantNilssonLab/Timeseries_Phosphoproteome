@@ -823,6 +823,8 @@ class NodesSitesMapping_embedding(nn.Module):
         self.site_embedding = nn.Parameter(torch.randn(self.n_sites, conn_dim, dtype=self.dtype, device=self.device))
         torch.nn.init.orthogonal_(self.site_embedding)  # Initialize with orthogonal matrix
 
+        self.emb_bias = nn.Parameter(torch.zeros(self.n_sites, dtype=self.dtype, device=self.device))
+        
         # Construct an MLP that maps from conn_dim to 1
         mlp_input_dim = 1 + conn_dim
         layers = []
@@ -862,6 +864,10 @@ class NodesSitesMapping_embedding(nn.Module):
         emb_exp = self.site_embedding.unsqueeze(0).unsqueeze(0).expand(samples, time_points, self.n_sites, self.conn_dim)
         mlp_input = torch.cat((site_agg_unsq, emb_exp), dim=-1)
         
+        # Add the bias term for each site
+        emb_bias = self.emb_bias.unsqueeze(0).unsqueeze(0).expand(samples, time_points, self.n_sites).unsqueeze(-1)  # (samples, time_points, n_sites, 1)
+        mlp_input = mlp_input + emb_bias  # (samples, time_points, n_sites, 1)
+        
         B = samples * time_points * self.n_sites
         mlp_input_flat = mlp_input.view(B, -1)  # (B, 1 + conn_dim)
         mlp_output_flat = self.non_linear(mlp_input_flat)  # (B, 1)
@@ -887,7 +893,8 @@ class NodesSitesMapping_embedding(nn.Module):
 
         # Regularize site embeddings
         reg += torch.sum(self.site_embedding ** 2)
-
+        reg += torch.sum(self.emb_bias ** 2)
+        
         # Regularize MLP weights and biases
         for layer in self.non_linear:
             if isinstance(layer, nn.Linear):
@@ -896,82 +903,6 @@ class NodesSitesMapping_embedding(nn.Module):
                     reg += torch.sum(layer.bias ** 2)
 
         return lambda_L2 * reg
-
-'''class NodesSitesMapping_embedding_ka(nn.Module):
-    """
-    Revised mapping layer that converts signaling node outputs to phosphosite outputs.
-    Here, a learnable node embedding (of shape (n_nodes, conn_dim)) is applied to the node outputs.
-    The one-hot mapping (of shape (n_sites, n_nodes)) enforces allowed connections,
-    combining node features (via a matrix multiply) into site features of shape (B, n_sites, conn_dim).
-    Finally, an MLP (applied per site) nonlinearly maps the con‑dim features to a scalar output.
-    """
-    def __init__(self, nodes_sites_map: pd.DataFrame, conn_dim: int = 10,
-                 hidden_layers: Dict[int, int] = None,
-                 dtype: torch.dtype = torch.float32, device: str = 'cpu', use_phospho: bool = True):
-        super().__init__()
-        self.device = device
-        self.dtype = dtype
-        self.conn_dim = conn_dim
-
-        n_sites = nodes_sites_map.shape[0]  # number of phosphosites
-        n_nodes = nodes_sites_map.shape[1]  # number of signaling nodes
-        self.output_dim = n_sites
-        self.n_nodes = n_nodes
-
-        # Create node embedding (nodes x conn_dim)
-        self.node_embedding = nn.Parameter(torch.ones(n_nodes, conn_dim, dtype=self.dtype, device=self.device))
-        torch.nn.init.orthogonal_(self.node_embedding)  # Initialize with orthogonal matrix
-
-        # One-hot mapping (sites x nodes) to enforce allowed connections
-        mapping_tensor = torch.tensor(nodes_sites_map.values, dtype=self.dtype, device=self.device)
-        self.mapping_tensor = mapping_tensor  # shape: (n_sites, n_nodes)
-
-        # Construct an MLP that maps from conn_dim to 1
-        input_size = conn_dim
-        layers = []
-        if hidden_layers:
-            for key in sorted(hidden_layers.keys()):
-                layers.append(nn.Linear(input_size, hidden_layers[key], bias=True))
-                layers.append(nn.ReLU())
-                input_size = hidden_layers[key]
-        # Final layer that outputs a single scalar per site
-        layers.append(nn.Linear(input_size, 1, bias=True))
-        self.non_linear = nn.Sequential(*layers).to(device, dtype)
-        
-    def forward(self, Y_full: torch.Tensor):
-        """
-        Forward pass.
-        
-        Parameters
-        ----------
-        Y_full : torch.Tensor
-            Node-level outputs (samples, time_points, n_nodes)
-        
-        Returns
-        -------
-        Y_mapped : torch.Tensor
-            Phosphosite outputs (samples, time_points, n_sites)
-        """
-        samples, time_points, n_nodes = Y_full.shape
-        B = samples * time_points
-        
-        Y_flat = Y_full.view(B, n_nodes)  # (B, n_nodes)
-
-        # Multiply node outputs with node embedding
-        # For each node i: node feature = Y_flat[:, i] * node_embedding[i]
-        node_features = Y_flat.unsqueeze(-1) * self.node_embedding  # (B, n_nodes, conn_dim)
-
-        # Enforce allowed connections
-        site_features = torch.matmul(self.mapping_tensor.float(), node_features)
-
-        # Reshape to combine batch and site dimensions: (B * n_sites, conn_dim)
-        mlp_input = site_features.view(B * self.output_dim, self.conn_dim)
-        mlp_output = self.non_linear(mlp_input)  # shape: (B * n_sites, 1)
-        
-        # Reshape back to (B, n_sites)
-        out = mlp_output.view(B, self.output_dim)
-        Y_mapped = out.view(samples, time_points, self.output_dim)
-        return Y_mapped'''
 
 
 class CumsumMapping(nn.Module):
